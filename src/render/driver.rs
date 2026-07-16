@@ -1,18 +1,15 @@
-use std::{
-  path::{Path, PathBuf},
-  sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use ansi_to_tui::IntoText;
 use img_tui::{NativeImageConfig, ProtocolPlacement, RenderMode, native_image};
 use ratatui::text::Text;
 use sha2::{Digest, Sha256};
-use tokio::{fs, sync::Semaphore};
+use tokio::fs;
 
 use crate::{cache, config::RenderConfig, event::RenderedImage, pdf::PageImage};
 
 use super::{
-  PreparedImageCache, RenderKind, RenderPermits, RenderedBytes,
+  PreparedImageCache, RenderKind, RenderedBytes,
   cache_file::{decode_cache_file, rewrite_cache_file, write_cache_file},
   chafa::run_chafa,
   key::{kitty_image_id, kitty_placement_id, render_cache_key, render_fingerprint},
@@ -30,11 +27,7 @@ pub(super) async fn render_with_fallbacks(
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
   prepared_images: PreparedImageCache,
-  semaphore: Arc<Semaphore>,
-  permits: Option<RenderPermits>,
 ) -> Result<RenderedImage, String> {
-  let _permits = acquire_render_permits(semaphore, permits).await?;
-
   let mut errors = Vec::new();
   for mode in modes {
     let image_id = kitty_image_id(&page, width, height, mode);
@@ -59,22 +52,6 @@ pub(super) async fn render_with_fallbacks(
     }
   }
   Err(errors.join("; "))
-}
-
-async fn acquire_render_permits(
-  semaphore: Arc<Semaphore>,
-  permits: Option<RenderPermits>,
-) -> Result<RenderPermits, String> {
-  match permits {
-    Some(permits) => Ok(permits),
-    None => Ok(RenderPermits {
-      _global: semaphore
-        .acquire_owned()
-        .await
-        .map_err(|error| error.to_string())?,
-      _preload: None,
-    }),
-  }
 }
 
 #[allow(clippy::too_many_arguments)]

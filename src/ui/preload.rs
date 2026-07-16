@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
-  app::App,
+  app::{App, ViewMode},
   event::AsyncEvent,
   layout,
   pdf::PageStore,
@@ -12,6 +12,38 @@ use crate::{
 };
 
 use super::page::{page_target_pixels, safe_inner, slice_spec_for_item};
+
+pub(super) fn pump_preload(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+) {
+  if app.view != ViewMode::Viewer {
+    return;
+  }
+  let Some(area) = app.viewport else {
+    return;
+  };
+  if app.layout.is_scroll() {
+    let Some(scroll_layout) = app.last_scroll_layout.as_ref() else {
+      return;
+    };
+    let visible_rows = layout::visible_scroll_rows(
+      scroll_layout,
+      app.scroll as usize,
+      area.height,
+      app.layout.scroll_divisor,
+    );
+    preload_scroll_neighbors(app, pages, renderer, tx, area, scroll_layout, &visible_rows);
+  } else {
+    let capacity = layout::grid_slots(area, &app.layout).len().max(1);
+    let start = app.grid_start_page;
+    let end = start.saturating_add(capacity).min(app.document.page_count);
+    let visible = (start..end).collect::<Vec<_>>();
+    preload_grid_neighbors(app, pages, renderer, tx, area, &visible);
+  }
+}
 
 pub(super) fn preload_scroll_neighbors(
   app: &App,
@@ -29,13 +61,27 @@ pub(super) fn preload_scroll_neighbors(
   let last = *visible_rows.last().unwrap_or(&first);
   let ahead = app.settings.config.render.preload_ahead;
   let behind = app.settings.config.render.preload_behind;
+  let slice_ahead = slice_preload_limit(
+    ahead,
+    app.settings.config.render.preload_slice_ahead,
+    app.settings.config.render.preload_terminal_ahead,
+  );
+  let slice_behind = slice_preload_limit(
+    behind,
+    app.settings.config.render.preload_slice_behind,
+    app.settings.config.render.preload_terminal_behind,
+  );
+  let terminal_ahead =
+    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
+  let terminal_behind =
+    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
   let ahead_rows = row_range_after(last, ahead, scroll_layout.rows.len());
   let behind_rows = row_range_before(first, behind);
   let mut slice_groups = HashSet::new();
 
   preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &ahead_rows);
   preload_scroll_next_pages(app, pages, tx, area, scroll_layout, visible_rows);
-  for index in &ahead_rows {
+  for (distance, index) in ahead_rows.iter().enumerate() {
     preload_scroll_row(
       app,
       pages,
@@ -44,12 +90,14 @@ pub(super) fn preload_scroll_neighbors(
       area,
       scroll_layout,
       *index,
+      distance < slice_ahead,
+      distance < terminal_ahead,
       &mut slice_groups,
     );
   }
 
   preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &behind_rows);
-  for index in &behind_rows {
+  for (distance, index) in behind_rows.iter().enumerate() {
     preload_scroll_row(
       app,
       pages,
@@ -58,6 +106,8 @@ pub(super) fn preload_scroll_neighbors(
       area,
       scroll_layout,
       *index,
+      distance < slice_behind,
+      distance < terminal_behind,
       &mut slice_groups,
     );
   }
@@ -100,6 +150,14 @@ fn row_range_after(last: usize, ahead: usize, row_count: usize) -> Vec<usize> {
 
 fn row_range_before(first: usize, behind: usize) -> Vec<usize> {
   (first.saturating_sub(behind)..first).rev().collect()
+}
+
+fn layer_preload_limit(outer: usize, configured: usize) -> usize {
+  configured.min(outer)
+}
+
+fn slice_preload_limit(outer: usize, configured: usize, terminal: usize) -> usize {
+  configured.max(terminal).min(outer)
 }
 
 fn preload_scroll_page_batches(
@@ -189,6 +247,8 @@ fn preload_scroll_row(
   area: Rect,
   scroll_layout: &layout::ScrollLayout,
   row_index: usize,
+  preload_slice: bool,
+  preload_terminal: bool,
   slice_groups: &mut HashSet<SlicePreloadGroup>,
 ) {
   let Some(row) = scroll_layout.rows.get(row_index) else {
@@ -205,10 +265,14 @@ fn preload_scroll_row(
       .get(spec.page_index)
       .and_then(|page| page.as_ref())
       .is_some();
-    if page_ready && !slice_ready && slice_groups.insert(SlicePreloadGroup::from_spec(spec)) {
+    if preload_slice
+      && page_ready
+      && !slice_ready
+      && slice_groups.insert(SlicePreloadGroup::from_spec(spec))
+    {
       pages.preload_slice(spec, tx);
     }
-    if let Some(slice) = app.slices.get(&spec) {
+    if preload_terminal && let Some(slice) = app.slices.get(&spec) {
       renderer.preload(slice, item.width, item.height, RenderKind::Fit, tx);
     }
   }
@@ -229,6 +293,10 @@ pub(super) fn preload_grid_neighbors(
   let last = *visible.last().unwrap_or(&first);
   let ahead = app.settings.config.render.preload_ahead;
   let behind = app.settings.config.render.preload_behind;
+  let terminal_ahead =
+    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
+  let terminal_behind =
+    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
   let slots = layout::grid_slots(area, &app.layout);
   let Some(slot) = slots.first().copied() else {
     return;
@@ -246,14 +314,30 @@ pub(super) fn preload_grid_neighbors(
     return;
   }
 
-  for index in last.saturating_add(1)..=last.saturating_add(ahead) {
+  for (distance, index) in (last.saturating_add(1)..=last.saturating_add(ahead)).enumerate() {
     if index >= app.document.page_count {
       break;
     }
-    preload_grid_page(app, pages, renderer, tx, index, page_area);
+    preload_grid_page(
+      app,
+      pages,
+      renderer,
+      tx,
+      index,
+      page_area,
+      distance < terminal_ahead,
+    );
   }
-  for index in (first.saturating_sub(behind)..first).rev() {
-    preload_grid_page(app, pages, renderer, tx, index, page_area);
+  for (distance, index) in (first.saturating_sub(behind)..first).rev().enumerate() {
+    preload_grid_page(
+      app,
+      pages,
+      renderer,
+      tx,
+      index,
+      page_area,
+      distance < terminal_behind,
+    );
   }
 }
 
@@ -264,6 +348,7 @@ fn preload_grid_page(
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   index: usize,
   page_area: Rect,
+  preload_terminal: bool,
 ) {
   let (target_width, target_height) = page_target_pixels(
     page_area.width,
@@ -272,7 +357,7 @@ fn preload_grid_page(
     app.page_dimensions(index),
   );
   pages.preload(index, target_width, target_height, tx);
-  if let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) {
+  if preload_terminal && let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) {
     renderer.preload(page, page_area.width, page_area.height, RenderKind::Fit, tx);
   }
 }

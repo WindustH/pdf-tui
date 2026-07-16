@@ -87,7 +87,9 @@ Render fields:
 - `cache_compression_threads`: L3 zstd compression threads
 - `max_concurrent`: maximum concurrent page/render tasks
 - `chafa_threads`: Chafa threads per process
-- `preload_ahead`, `preload_behind`: preload window around the visible region
+- `preload_ahead`, `preload_behind`: outer page PNG preload window around the visible region
+- `preload_slice_ahead`, `preload_slice_behind`: nearer scroll-slice PNG preload window
+- `preload_terminal_ahead`, `preload_terminal_behind`: nearest terminal stream preload window
 - `passthrough`: terminal multiplexer passthrough override
 - `zellij_sixel`: `off`, `auto`, or `on`
 

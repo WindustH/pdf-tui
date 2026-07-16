@@ -25,6 +25,10 @@ pub struct RenderConfig {
   pub chafa_threads: usize,
   pub preload_ahead: usize,
   pub preload_behind: usize,
+  pub preload_slice_ahead: usize,
+  pub preload_slice_behind: usize,
+  pub preload_terminal_ahead: usize,
+  pub preload_terminal_behind: usize,
   pub passthrough: Option<String>,
   pub zellij_sixel: String,
 }
@@ -59,6 +63,10 @@ impl Default for RenderConfig {
       chafa_threads: 1,
       preload_ahead: 4,
       preload_behind: 2,
+      preload_slice_ahead: 3,
+      preload_slice_behind: 1,
+      preload_terminal_ahead: 2,
+      preload_terminal_behind: 1,
       passthrough: None,
       zellij_sixel: "off".to_string(),
     }

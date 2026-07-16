@@ -58,11 +58,20 @@ state. Runtime-only placement state is managed by `img-tui`.
 
 ## Preloading
 
-`render.preload_ahead` and `render.preload_behind` define the preload window
-around the visible region.
+Preloading is tiered by distance from the visible region:
 
-Preloads share the same global concurrency limit as visible requests, but they
-use a separate permit path that leaves capacity for visible work when possible.
+- `render.preload_ahead` and `render.preload_behind` warm the outer page PNG
+  cache and trigger batched `pdftoppm` output.
+- `render.preload_slice_ahead` and `render.preload_slice_behind` warm nearer
+  scroll-slice PNGs.
+- `render.preload_terminal_ahead` and `render.preload_terminal_behind` warm the
+  nearest terminal streams and memory cache entries.
+
+Visible requests use the highest scheduler priority. The page/slice scheduler
+orders work as visible requests, then slice preloads, then page PNG preloads.
+The terminal-render scheduler orders work as visible requests, then terminal
+stream preloads. A queued preload is promoted when it becomes needed by the
+visible viewport.
 
 ## Protocol Rendering
 

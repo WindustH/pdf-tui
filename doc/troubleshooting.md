@@ -34,6 +34,10 @@ page_dpi = 180
 max_concurrent = 4
 preload_ahead = 4
 preload_behind = 2
+preload_slice_ahead = 3
+preload_slice_behind = 1
+preload_terminal_ahead = 2
+preload_terminal_behind = 1
 ```
 
 ## Cache Uses Too Much Space

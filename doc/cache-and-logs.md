@@ -23,6 +23,11 @@ Runtime rendering uses a multi-level cache:
 
 L4 is not a stored cache and has no size setting.
 
+Preloading feeds those cache levels by distance. Farther candidates warm page
+PNGs on disk, nearer scroll candidates warm slice PNGs, and the nearest
+candidates warm terminal streams in the render cache and memory cache. Visible
+work always has higher scheduler priority than queued preloads.
+
 The cache limits are configured with:
 
 ```toml

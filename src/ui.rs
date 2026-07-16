@@ -123,6 +123,15 @@ pub fn draw(
   }
 }
 
+pub fn pump_preload(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+) {
+  preload::pump_preload(app, pages, renderer, tx);
+}
+
 fn draw_main(
   frame: &mut Frame,
   app: &mut App,

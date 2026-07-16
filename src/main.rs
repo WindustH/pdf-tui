@@ -305,13 +305,14 @@ fn handle_async_event(
           }
         }
       }
-      let visible_wait = page_store.finish(&outcome, success || !preload);
+      let visible_wait = page_store.finish(&outcome, success || !preload, tx);
       if success || !preload {
         if let Some(slice) = slice {
           app.finish_slice(slice, outcome.result);
         } else {
           app.finish_page(page_index, outcome.result);
         }
+        ui::pump_preload(app, page_store, renderer, tx);
         let redraw = !preload || visible_wait;
         debug!(
           page = page_index + 1,
@@ -343,7 +344,7 @@ fn handle_async_event(
           "image render failed"
         ),
       }
-      let result = renderer.finish(outcome);
+      let result = renderer.finish(outcome, tx);
       if let Some(error) = result.message {
         app.set_message(error);
       }
