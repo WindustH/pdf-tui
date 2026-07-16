@@ -1,12 +1,6 @@
 # pdf-tui
 
-`pdf-tui` is a terminal PDF reader built with `framework-tui` and `img-tui`.
-
-Dependencies are managed as git submodules:
-
-```sh
-git submodule update --init --recursive
-```
+`pdf-tui` is a terminal PDF reader.
 
 Runtime dependencies:
 
@@ -64,4 +58,5 @@ clear-cache
 quit
 ```
 
-Full documentation is in [doc/index.md](doc/index.md).
+## Documentation
+[doc/index.md](doc/index.md).
