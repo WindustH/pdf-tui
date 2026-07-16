@@ -2,11 +2,12 @@ use img_tui::ProtocolOverlay;
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Rect},
-  style::{Modifier, Style},
+  style::{Color, Modifier, Style},
   text::{Line, Span, Text},
-  widgets::{Block, Borders, Paragraph, Wrap},
+  widgets::{Block, Borders, Paragraph},
 };
 use tokio::sync::mpsc;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
   app::App,
@@ -65,6 +66,7 @@ fn draw_bookmark_tree(frame: &mut Frame, app: &mut App, area: Rect) {
     .fg(theme.color(&theme.foreground))
     .bg(theme.color(&theme.background));
   let border = Style::default().fg(theme.color(&theme.border));
+  let inner_width = area.width.saturating_sub(2).max(1);
   let rows = app.visible_bookmark_indices();
   let mut lines = Vec::new();
 
@@ -78,35 +80,7 @@ fn draw_bookmark_tree(frame: &mut Frame, app: &mut App, area: Rect) {
       .skip(app.bookmarks_scroll as usize)
       .take(inner_height as usize)
     {
-      let bookmark = &app.bookmarks[*index];
-      let selected = app.bookmarks_selected == Some(*index);
-      let has_children = app.bookmark_has_children(*index);
-      let marker = if has_children {
-        if app.bookmarks_expanded.contains(index) {
-          "[-]"
-        } else {
-          "[+]"
-        }
-      } else {
-        "   "
-      };
-      let indent = "  ".repeat(bookmark.level.saturating_sub(1) as usize);
-      let style = if selected {
-        base
-          .fg(theme.color(&theme.background))
-          .bg(theme.color(&theme.accent))
-          .add_modifier(Modifier::BOLD)
-      } else {
-        base
-      };
-      lines.push(Line::from(Span::styled(
-        format!(
-          "{indent}{marker} p{} {}",
-          bookmark.page_index + 1,
-          bookmark.title
-        ),
-        style,
-      )));
+      lines.push(bookmark_tree_line(app, *index, inner_width));
     }
   }
 
@@ -118,10 +92,90 @@ fn draw_bookmark_tree(frame: &mut Frame, app: &mut App, area: Rect) {
           .title("bookmarks")
           .border_style(border),
       )
-      .style(base)
-      .wrap(Wrap { trim: false }),
+      .style(base),
     area,
   );
+}
+
+fn bookmark_tree_line(app: &App, index: usize, inner_width: u16) -> Line<'static> {
+  let theme = &app.settings.theme;
+  let bookmark = &app.bookmarks[index];
+  let selected = app.bookmarks_selected == Some(index);
+  let background = if selected {
+    theme.color(&theme.accent)
+  } else {
+    theme.color(&theme.background)
+  };
+  let foreground = if selected {
+    theme.color(&theme.background)
+  } else {
+    theme.color(&theme.foreground)
+  };
+  let base = Style::default().fg(foreground).bg(background);
+  let title_style = if selected {
+    base.add_modifier(Modifier::BOLD)
+  } else {
+    base
+  };
+  let spacer_style = Style::default().bg(background);
+  let page_foreground = if selected {
+    theme.color(&theme.foreground)
+  } else {
+    theme.color(&theme.muted)
+  };
+  let page_style = Style::default().fg(page_foreground).bg(background);
+  let expanded_style = status_style(theme.color(&theme.selected_border), background, selected);
+  let collapsed_style = status_style(theme.color(&theme.focused_border), background, selected);
+  let leaf_style = status_style(theme.color(&theme.muted), background, false);
+  let has_children = app.bookmark_has_children(index);
+  let (marker, marker_style) = if has_children {
+    if app.bookmarks_expanded.contains(&index) {
+      ("[-]", expanded_style)
+    } else {
+      ("[+]", collapsed_style)
+    }
+  } else {
+    ("   ", leaf_style)
+  };
+  let page_width = format!("p{}", app.document.page_count.max(1)).width();
+  let page = format!("p{}", bookmark.page_index + 1);
+  let page = format!("{page:>page_width$}");
+  let right_width = page_width + 1 + marker.width();
+  let inner_width = usize::from(inner_width);
+  let left_width = inner_width.saturating_sub(right_width.saturating_add(1));
+  let indent = "  ".repeat(bookmark.level.saturating_sub(1) as usize);
+  let title = truncate_to_width(&format!("{indent}{}", bookmark.title), left_width);
+  let padding = inner_width.saturating_sub(title.width().saturating_add(right_width));
+  Line::from(vec![
+    Span::styled(title, title_style),
+    Span::styled(" ".repeat(padding), spacer_style),
+    Span::styled(page, page_style),
+    Span::styled(" ", spacer_style),
+    Span::styled(marker.to_string(), marker_style),
+  ])
+}
+
+fn status_style(foreground: Color, background: Color, bold: bool) -> Style {
+  let style = Style::default().fg(foreground).bg(background);
+  if bold {
+    style.add_modifier(Modifier::BOLD)
+  } else {
+    style
+  }
+}
+
+fn truncate_to_width(value: &str, max_width: usize) -> String {
+  let mut output = String::new();
+  let mut width: usize = 0;
+  for ch in value.chars() {
+    let ch_width = ch.width().unwrap_or(0);
+    if width.saturating_add(ch_width) > max_width {
+      break;
+    }
+    output.push(ch);
+    width += ch_width;
+  }
+  output
 }
 
 #[allow(clippy::too_many_arguments)]
