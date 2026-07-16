@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct KeymapConfig {
   pub viewer: KeymapSection,
   pub metadata: KeymapSection,
+  pub bookmarks: KeymapSection,
   #[serde(default = "default_input_keymap_section")]
   pub input: KeymapSection,
   pub global: KeymapSection,
@@ -58,6 +59,7 @@ impl Default for KeymapConfig {
           key("right", "page_down", "Move one page down"),
           key("r", "refresh", "Refresh current PDF"),
           key("m", "metadata", "Show PDF metadata"),
+          key("b", "bookmarks", "Show PDF bookmarks"),
           key(
             ["L", "s"],
             "layout scroll 1 3",
@@ -86,6 +88,41 @@ impl Default for KeymapConfig {
           key("pgup", "metadata_page_up", "Scroll metadata page up"),
         ],
       },
+      bookmarks: KeymapSection {
+        keymap: vec![
+          key("q", "back", "Return to viewer"),
+          key("esc", "back", "Return to viewer"),
+          key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("f1", "help", "Show bookmark key bindings"),
+          key("e", "edit_bookmarks", "Edit PDF bookmarks"),
+          key("j", "bookmarks_next", "Move to next bookmark"),
+          key("down", "bookmarks_next", "Move to next bookmark"),
+          key("k", "bookmarks_previous", "Move to previous bookmark"),
+          key("up", "bookmarks_previous", "Move to previous bookmark"),
+          key(
+            "pgdn",
+            "bookmarks_page_down",
+            "Move down one page of bookmarks",
+          ),
+          key(
+            "pagedown",
+            "bookmarks_page_down",
+            "Move down one page of bookmarks",
+          ),
+          key("pgup", "bookmarks_page_up", "Move up one page of bookmarks"),
+          key("space", "bookmarks_toggle", "Expand or collapse bookmark"),
+          key(
+            "z",
+            "bookmarks_toggle_all",
+            "Expand or collapse all bookmarks",
+          ),
+          key("enter", "bookmarks_open", "Jump to bookmark"),
+          key("h", "bookmarks_panel_narrower", "Narrow bookmark panel"),
+          key("left", "bookmarks_panel_narrower", "Narrow bookmark panel"),
+          key("l", "bookmarks_panel_wider", "Widen bookmark panel"),
+          key("right", "bookmarks_panel_wider", "Widen bookmark panel"),
+        ],
+      },
       input: default_input_keymap_section(),
       global: KeymapSection {
         keymap: vec![key(":", "command", "Enter command")],
@@ -104,10 +141,20 @@ impl KeymapConfig {
     )
   }
 
+  pub fn bookmarks_bindings(&self) -> KeyBindings {
+    KeyBindings::from_sections(
+      binding_configs(&self.bookmarks.keymap),
+      Vec::<KeyBindingConfig>::new(),
+      binding_configs(&self.input.keymap),
+      binding_configs(&self.global.keymap),
+    )
+  }
+
   pub(super) fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
     append_missing_actions(&mut self.viewer.keymap, &default.viewer.keymap);
     append_missing_actions(&mut self.metadata.keymap, &default.metadata.keymap);
+    append_missing_actions(&mut self.bookmarks.keymap, &default.bookmarks.keymap);
     append_missing_actions(&mut self.input.keymap, &default.input.keymap);
     append_missing_actions(&mut self.global.keymap, &default.global.keymap);
   }
@@ -117,6 +164,7 @@ pub(super) fn format_keymap_toml(config: &KeymapConfig) -> String {
   let mut out = String::new();
   push_keymap_section(&mut out, "viewer", &config.viewer);
   push_keymap_section(&mut out, "metadata", &config.metadata);
+  push_keymap_section(&mut out, "bookmarks", &config.bookmarks);
   push_keymap_section(&mut out, "input", &config.input);
   push_keymap_section(&mut out, "global", &config.global);
   out

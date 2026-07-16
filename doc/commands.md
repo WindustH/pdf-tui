@@ -54,13 +54,22 @@ Open the metadata view.
 From that view, `edit_metadata` opens the editable metadata draft in `$EDITOR`.
 The default key for that action is `e`.
 
+## `:bookmarks`
+
+Open the bookmarks view.
+
+The bookmarks view shows the PDF outline as a collapsible tree and previews the
+currently hovered target page. From that view, `edit_bookmarks` opens the
+editable bookmark draft in `$EDITOR`. The default key for that action is `e`.
+
 ## `:help`
 
 Show key bindings for the current interface.
 
 `F1` opens the same contextual help popup. In the viewer it shows viewer plus
 global bindings, in the metadata view it shows metadata plus global bindings,
-and while the command prompt is active it shows input bindings.
+in the bookmarks view it shows bookmark plus global bindings, and while the
+command prompt is active it shows input bindings.
 
 ## `:write-config`
 

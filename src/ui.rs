@@ -1,3 +1,4 @@
+mod bookmarks_view;
 mod footer;
 mod grid;
 mod metadata_view;
@@ -144,6 +145,23 @@ fn draw_main(
 
   if app.view == ViewMode::Metadata {
     metadata_view::draw_metadata(frame, app, area);
+    return;
+  }
+
+  if app.view == ViewMode::Bookmarks {
+    bookmarks_view::draw_bookmarks(
+      frame,
+      app,
+      pages,
+      renderer,
+      tx,
+      area,
+      overlays,
+      frame_message,
+      preserve_overlays,
+      preserve_areas,
+      drawn_render_keys,
+    );
     return;
   }
 

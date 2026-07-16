@@ -54,3 +54,25 @@ The metadata view shows PDF file information and PDF metadata reported by
 
 Editable fields are written through `exiftool` after an explicit confirmation.
 The default viewer key is `m`; the default metadata edit key is `e`.
+
+## Bookmarks
+
+The bookmarks view shows the PDF outline reported by `pdftk`.
+
+The view has two panels:
+
+- the left panel is a collapsible bookmark tree
+- the right panel previews the page targeted by the hovered bookmark
+
+The default panel ratio is `2:1` and can be adjusted in the running session
+with the bookmark panel width actions. On first entry, bookmark children are
+collapsed. When entering the view, `pdf-tui` selects the bookmark closest to the
+current 0-based reading progress and expands only the necessary parent entries.
+Expansion state is retained for the rest of the session.
+
+`space` expands or collapses the hovered entry. `z` expands every entry on the
+first press and collapses every entry on the next press. `enter` jumps to the
+hovered bookmark progress. The default viewer key is `b`; the default bookmark
+edit key is `e`.
+
+Editable bookmarks are written through `pdftk` after an explicit confirmation.

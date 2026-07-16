@@ -8,6 +8,7 @@ The file is split by context:
 
 - `[viewer]`
 - `[metadata]`
+- `[bookmarks]`
 - `[input]`
 - `[global]`
 
@@ -20,6 +21,7 @@ keymap = [
   { on = "f1", run = "help", desc = "Show viewer key bindings" },
   { on = "r", run = "refresh", desc = "Refresh current PDF" },
   { on = "m", run = "metadata", desc = "Show PDF metadata" },
+  { on = "b", run = "bookmarks", desc = "Show PDF bookmarks" },
   { on = ["L", "s"], run = "layout scroll 1 3", desc = "Use one-column scroll layout" },
 ]
 ```
@@ -48,6 +50,7 @@ Viewer actions:
 - `clear-cache`, `clear_cache`
 - `refresh`
 - `metadata`
+- `bookmarks`
 - `layout <name> [args...]`
 - `layout-use <name> [args...]`
 
@@ -61,6 +64,18 @@ Metadata actions:
 - `edit_metadata`
 - `metadata_scroll_down`, `metadata_scroll_up`
 - `metadata_page_down`, `metadata_page_up`
+
+Bookmark actions:
+
+- `back`
+- `help`
+- `edit_bookmarks`
+- `bookmarks_next`, `bookmarks_previous`
+- `bookmarks_page_down`, `bookmarks_page_up`
+- `bookmarks_toggle`
+- `bookmarks_toggle_all`
+- `bookmarks_open`
+- `bookmarks_panel_narrower`, `bookmarks_panel_wider`
 
 Input actions:
 

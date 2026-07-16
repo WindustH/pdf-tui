@@ -1,8 +1,9 @@
 # Controls
 
 Key bindings are context aware. Viewer actions are active while reading the
-PDF. Metadata actions are active in the metadata view. Input actions are active
-while the command prompt is open.
+PDF. Metadata actions are active in the metadata view. Bookmark actions are
+active in the bookmarks view. Input actions are active while the command prompt
+is open.
 
 ## Viewer
 
@@ -18,6 +19,7 @@ while the command prompt is open.
 - `end`, `G`: last page
 - `r`: refresh the current PDF from disk
 - `m`: open PDF metadata
+- `b`: open PDF bookmarks
 - `L s`: switch to the default scroll layout
 - `L g`: switch to the default grid layout
 - `:`: open command prompt
@@ -32,6 +34,23 @@ while the command prompt is open.
 - `k`, `up`: scroll metadata up
 - `pgdn`: scroll metadata down by one viewport
 - `pgup`: scroll metadata up by one viewport
+- `ctrl-c`: quit
+- `:`: open command prompt
+
+## Bookmarks
+
+- `q`, `esc`: return to the viewer
+- `f1`: show bookmark key bindings
+- `e`: edit PDF bookmarks in `$EDITOR`
+- `j`, `down`: move to the next visible bookmark
+- `k`, `up`: move to the previous visible bookmark
+- `pgdn`: move down by one bookmark viewport
+- `pgup`: move up by one bookmark viewport
+- `space`: expand or collapse the hovered bookmark
+- `z`: expand all bookmarks, then collapse all bookmarks on the next press
+- `enter`: jump to the hovered bookmark
+- `h`, `left`: narrow the bookmark tree panel
+- `l`, `right`: widen the bookmark tree panel
 - `ctrl-c`: quit
 - `:`: open command prompt
 

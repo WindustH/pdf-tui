@@ -7,6 +7,7 @@ Runtime dependencies:
 - `poppler` for `pdfinfo` and `pdftoppm`
 - `chafa` for terminal symbol rendering fallbacks
 - `exiftool` for editing PDF metadata
+- `pdftk` for reading and editing PDF bookmarks
 
 ## Installation
 
@@ -53,6 +54,7 @@ layout scroll <columns> <scroll_divisor>
 layout grid <rows> <columns>
 refresh
 metadata
+bookmarks
 help
 clear-cache
 quit

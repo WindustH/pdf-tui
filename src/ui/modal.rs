@@ -51,6 +51,44 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
       )));
       Text::from(lines)
     }
+    ConfirmDialog::BookmarksWrite { edit } => {
+      let mut lines = vec![
+        Line::from(Span::styled(
+          "Apply PDF bookmark changes?",
+          style
+            .fg(theme.color(&theme.accent))
+            .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+          format!(
+            "{} -> {} bookmark(s): {}",
+            edit.original_count,
+            edit.new_count(),
+            app.document.file_name
+          ),
+          style,
+        )),
+      ];
+      for bookmark in edit.bookmarks.iter().take(5) {
+        lines.push(Line::from(Span::styled(
+          format!(
+            "{}{}: {}",
+            "  ".repeat(bookmark.level.saturating_sub(1) as usize),
+            bookmark.page_index + 1,
+            bookmark.title
+          ),
+          style,
+        )));
+      }
+      if edit.bookmarks.len() > 5 {
+        lines.push(Line::from(Span::styled("...", style)));
+      }
+      lines.push(Line::from(Span::styled(
+        "y apply    Enter/n/esc cancel",
+        style.fg(theme.color(&theme.muted)),
+      )));
+      Text::from(lines)
+    }
   };
   let popup_style = PopupDialogStyle {
     base: style,

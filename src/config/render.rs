@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct RenderConfig {
   pub pdfinfo_bin: String,
   pub pdftoppm_bin: String,
+  pub pdftk_bin: String,
   pub page_dpi: u16,
   pub chafa_bin: String,
   pub auto_detect: bool,
@@ -26,6 +27,7 @@ impl Default for RenderConfig {
     Self {
       pdfinfo_bin: "pdfinfo".to_string(),
       pdftoppm_bin: "pdftoppm".to_string(),
+      pdftk_bin: "pdftk".to_string(),
       page_dpi: 180,
       chafa_bin: "chafa".to_string(),
       auto_detect: true,

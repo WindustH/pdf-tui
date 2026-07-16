@@ -1,3 +1,4 @@
+mod bookmark_state;
 mod input;
 mod navigation;
 mod progress;
@@ -9,6 +10,7 @@ use framework_tui::{
 use ratatui::layout::Rect;
 
 use crate::{
+  bookmarks::{self, BookmarkEdit, PdfBookmark},
   config::{EffectiveLayoutConfig, Settings},
   layout::ScrollLayout,
   metadata::{self, MetadataEdit, PdfMetadataEntry},
@@ -19,6 +21,7 @@ use crate::{
 pub enum ViewMode {
   Viewer,
   Metadata,
+  Bookmarks,
 }
 
 #[derive(Debug, Clone)]
@@ -27,12 +30,17 @@ pub enum EditorRequest {
     original: Vec<PdfMetadataEntry>,
     draft: String,
   },
+  Bookmarks {
+    original: Vec<PdfBookmark>,
+    draft: String,
+  },
 }
 
 impl EditorRequest {
   pub fn initial_text(&self) -> &str {
     match self {
       Self::Metadata { draft, .. } => draft,
+      Self::Bookmarks { draft, .. } => draft,
     }
   }
 }
@@ -40,12 +48,14 @@ impl EditorRequest {
 #[derive(Debug, Clone)]
 pub enum ConfirmDialog {
   MetadataWrite { edit: MetadataEdit },
+  BookmarksWrite { edit: BookmarkEdit },
 }
 
 pub struct App {
   pub document: PdfDocument,
   pub settings: Settings,
   pub keymap: KeyBindings,
+  pub bookmarks_keymap: KeyBindings,
   pub pages: Vec<Option<PageImage>>,
   pub slices: std::collections::HashMap<PageSliceSpec, PageImage>,
   pub page_errors: Vec<Option<String>>,
@@ -63,6 +73,14 @@ pub struct App {
   pub metadata: Vec<PdfMetadataEntry>,
   pub metadata_error: Option<String>,
   pub metadata_scroll: u16,
+  pub bookmarks: Vec<PdfBookmark>,
+  pub bookmarks_error: Option<String>,
+  pub bookmarks_expanded: std::collections::HashSet<usize>,
+  pub bookmarks_selected: Option<usize>,
+  pub bookmarks_scroll: u16,
+  pub bookmarks_all_expanded: bool,
+  pub bookmarks_left_ratio: u16,
+  pub bookmarks_right_ratio: u16,
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
   pub message: String,
@@ -82,6 +100,11 @@ struct InputRedrawState {
   focused_page: usize,
   view: ViewMode,
   metadata_scroll: u16,
+  bookmarks_selected: Option<usize>,
+  bookmarks_scroll: u16,
+  bookmarks_expanded_len: usize,
+  bookmarks_left_ratio: u16,
+  bookmarks_right_ratio: u16,
   confirm: bool,
   key_help: bool,
   editor_request: bool,
@@ -109,16 +132,28 @@ struct CompletionRedrawState {
 impl App {
   pub fn new(document: PdfDocument, settings: Settings) -> Self {
     let keymap = settings.keymap.bindings();
+    let bookmarks_keymap = settings.keymap.bookmarks_bindings();
     let layout = settings.config.layout.effective();
     let page_count = document.page_count;
     let (metadata, metadata_error) = match metadata::read_pdf_metadata(&document.path) {
       Ok(metadata) => (metadata, None),
       Err(error) => (Vec::new(), Some(error)),
     };
+    let (bookmarks, bookmarks_error) = match bookmarks::read_pdf_bookmarks(
+      &document.path,
+      &settings.config.render.pdftk_bin,
+      document.page_count,
+    ) {
+      Ok(bookmarks) => (bookmarks, None),
+      Err(error) => (Vec::new(), Some(error)),
+    };
+    let bookmarks_left_ratio = settings.config.behavior.bookmarks_left_ratio.max(1);
+    let bookmarks_right_ratio = settings.config.behavior.bookmarks_right_ratio.max(1);
     Self {
       document,
       settings,
       keymap,
+      bookmarks_keymap,
       pages: vec![None; page_count],
       slices: std::collections::HashMap::new(),
       page_errors: vec![None; page_count],
@@ -136,6 +171,14 @@ impl App {
       metadata,
       metadata_error,
       metadata_scroll: 0,
+      bookmarks,
+      bookmarks_error,
+      bookmarks_expanded: std::collections::HashSet::new(),
+      bookmarks_selected: None,
+      bookmarks_scroll: 0,
+      bookmarks_all_expanded: false,
+      bookmarks_left_ratio,
+      bookmarks_right_ratio,
       confirm: None,
       key_help: false,
       message: "ready".to_string(),
@@ -184,6 +227,7 @@ impl App {
     &mut self,
     document: PdfDocument,
     metadata: Result<Vec<PdfMetadataEntry>, String>,
+    bookmarks: Result<Vec<PdfBookmark>, String>,
   ) {
     let progress = self.current_progress().or(self.pending_progress);
     let page_count = document.page_count;
@@ -206,6 +250,20 @@ impl App {
         self.metadata_error = Some(error);
       }
     }
+    match bookmarks {
+      Ok(bookmarks) => {
+        self.bookmarks = bookmarks;
+        self.bookmarks_error = None;
+      }
+      Err(error) => {
+        self.bookmarks.clear();
+        self.bookmarks_error = Some(error);
+      }
+    }
+    self.bookmarks_expanded.clear();
+    self.bookmarks_selected = None;
+    self.bookmarks_scroll = 0;
+    self.bookmarks_all_expanded = false;
     self.metadata_scroll = 0;
     if let Some(progress) = progress {
       self.set_progress_target(progress);
@@ -242,6 +300,38 @@ impl App {
     self.set_message(format!("confirm metadata changes: {count} change(s)"));
   }
 
+  pub fn finish_bookmarks_editor_input(
+    &mut self,
+    original: Vec<PdfBookmark>,
+    result: Result<String, String>,
+  ) {
+    let edited = match result {
+      Ok(edited) => edited,
+      Err(error) => {
+        self.set_message(format!("editor failed: {error}"));
+        return;
+      }
+    };
+    let edit =
+      match bookmarks::bookmark_changes_from_edit(&original, &edited, self.document.page_count) {
+        Ok(Some(edit)) => edit,
+        Ok(None) => {
+          self.set_message("bookmarks unchanged");
+          return;
+        }
+        Err(error) => {
+          self.set_message(format!("bookmark edit failed: {error}"));
+          return;
+        }
+      };
+    self.set_message(format!(
+      "confirm bookmark changes: {} -> {} entries",
+      edit.original_count,
+      edit.new_count()
+    ));
+    self.confirm = Some(ConfirmDialog::BookmarksWrite { edit });
+  }
+
   pub fn finish_refresh_request(&mut self) -> bool {
     self.refresh_in_flight = false;
     std::mem::take(&mut self.refresh_queued)
@@ -260,6 +350,7 @@ impl App {
     match self.view {
       ViewMode::Viewer => "Viewer key bindings",
       ViewMode::Metadata => "Metadata key bindings",
+      ViewMode::Bookmarks => "Bookmark key bindings",
     }
   }
 
@@ -272,6 +363,12 @@ impl App {
         });
     }
 
+    if self.view == ViewMode::Bookmarks {
+      return self
+        .bookmarks_keymap
+        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+    }
+
     self
       .keymap
       .help_entries_filtered(self.key_context(), |action| self.action_available(action))
@@ -281,6 +378,7 @@ impl App {
     match self.view {
       ViewMode::Viewer => KeyContext::Browser,
       ViewMode::Metadata => KeyContext::Detail,
+      ViewMode::Bookmarks => KeyContext::Browser,
     }
   }
 
@@ -292,13 +390,23 @@ impl App {
       "quit" | "command" | "help" => true,
       "clear-cache" | "clear_cache" | "refresh" => true,
       "scroll_down" | "scroll_up" | "page_down" | "page_up" | "next_page" | "previous_page"
-      | "home" | "end" | "metadata" => self.view == ViewMode::Viewer,
+      | "home" | "end" | "metadata" | "bookmarks" => self.view == ViewMode::Viewer,
       "back"
       | "edit_metadata"
       | "metadata_scroll_down"
       | "metadata_scroll_up"
       | "metadata_page_down"
       | "metadata_page_up" => self.view == ViewMode::Metadata,
+      "edit_bookmarks"
+      | "bookmarks_next"
+      | "bookmarks_previous"
+      | "bookmarks_page_down"
+      | "bookmarks_page_up"
+      | "bookmarks_toggle"
+      | "bookmarks_toggle_all"
+      | "bookmarks_open"
+      | "bookmarks_panel_narrower"
+      | "bookmarks_panel_wider" => self.view == ViewMode::Bookmarks,
       _ => false,
     }
   }

@@ -24,6 +24,7 @@ git submodule update --init --recursive
 - `config/`: config loading plus layout, render, behavior, keymap, and theme submodules
 - `pdf/`: PDF metadata, page/slice rasterization, and page preload store
 - `metadata.rs`: PDF metadata read/edit/write support through `exiftool`
+- `bookmarks.rs`: PDF bookmark read/edit/write support through `pdftk`
 - `render/`: terminal rendering state machine, cache file codec, Chafa driver, native protocol driver, cache keys
 - `ui/`: frame composition plus footer, scroll, grid, page drawing, and preload triggers
 - `layout.rs`: scroll/grid geometry and progress-relevant layout calculations
@@ -35,16 +36,16 @@ The command prompt uses `framework-tui::handle_prompt_key` and
 `framework-tui::handle_prompt_paste`. `pdf-tui` supplies command-specific
 completion candidates and command execution.
 
-External metadata editing uses `framework-tui::edit_text_in_editor`; the TUI
-temporarily suspends alternate-screen/raw-mode state before launching `$EDITOR`
-and restores protocol image state when returning.
+External metadata and bookmark editing use `framework-tui::edit_text_in_editor`;
+the TUI temporarily suspends alternate-screen/raw-mode state before launching
+`$EDITOR` and restores protocol image state when returning.
 
 ## Refresh
 
 Manual `:refresh`, the viewer `r` key, and optional automatic refresh all share
-the same reload path. A reload replaces the `PdfDocument`, clears in-memory page
-and terminal render state, then re-applies the current reading progress to the
-new document.
+the same reload path. A reload replaces the `PdfDocument`, refreshes metadata
+and bookmarks, clears in-memory page and terminal render state, then re-applies
+the current reading progress to the new document.
 
 Automatic refresh is a lightweight background polling thread. It watches the
 opened file signature and sends refresh requests with a configurable minimum

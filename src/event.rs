@@ -3,6 +3,7 @@ use img_tui::{ProtocolPlacement, RenderMode};
 use ratatui::text::Text;
 
 use crate::{
+  bookmarks::PdfBookmark,
   cache::CacheCleanupReport,
   metadata::PdfMetadataEntry,
   pdf::PdfDocument,
@@ -18,12 +19,14 @@ pub enum AsyncEvent {
   AutoRefreshRequested,
   Refresh(DocumentReloadOutcome),
   MetadataWrite(MetadataWriteOutcome),
+  BookmarksWrite(BookmarksWriteOutcome),
 }
 
 #[derive(Debug)]
 pub struct DocumentReload {
   pub document: PdfDocument,
   pub metadata: Result<Vec<PdfMetadataEntry>, String>,
+  pub bookmarks: Result<Vec<PdfBookmark>, String>,
 }
 
 #[derive(Debug)]
@@ -35,6 +38,12 @@ pub struct DocumentReloadOutcome {
 pub struct MetadataWriteOutcome {
   pub result: Result<DocumentReload, String>,
   pub changed_tags: usize,
+}
+
+#[derive(Debug)]
+pub struct BookmarksWriteOutcome {
+  pub result: Result<DocumentReload, String>,
+  pub changed_bookmarks: usize,
 }
 
 #[derive(Debug)]

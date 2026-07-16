@@ -9,9 +9,10 @@ use framework_tui::{
 use tokio::sync::mpsc;
 
 use crate::{
-  cache, config,
+  bookmarks, cache, config,
   event::{
-    AsyncEvent, CacheClearOutcome, DocumentReload, DocumentReloadOutcome, MetadataWriteOutcome,
+    AsyncEvent, BookmarksWriteOutcome, CacheClearOutcome, DocumentReload, DocumentReloadOutcome,
+    MetadataWriteOutcome,
   },
   metadata,
   pdf::PdfDocument,
@@ -24,6 +25,7 @@ use super::{
 
 const COMMAND_NAMES: &[&str] = &[
   "clear-cache",
+  "bookmarks",
   "help",
   "layout",
   "layout-use",
@@ -59,6 +61,8 @@ impl App {
           self.metadata_scroll_down()
         }
         MouseEventKind::ScrollUp if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
+        MouseEventKind::ScrollDown if self.view == ViewMode::Bookmarks => self.bookmarks_next(),
+        MouseEventKind::ScrollUp if self.view == ViewMode::Bookmarks => self.bookmarks_previous(),
         MouseEventKind::ScrollDown => self.scroll_down(),
         MouseEventKind::ScrollUp => self.scroll_up(),
         _ => {}
@@ -87,6 +91,11 @@ impl App {
       focused_page: self.focused_page,
       view: self.view,
       metadata_scroll: self.metadata_scroll,
+      bookmarks_selected: self.bookmarks_selected,
+      bookmarks_scroll: self.bookmarks_scroll,
+      bookmarks_expanded_len: self.bookmarks_expanded.len(),
+      bookmarks_left_ratio: self.bookmarks_left_ratio,
+      bookmarks_right_ratio: self.bookmarks_right_ratio,
       confirm: self.confirm.is_some(),
       key_help: self.key_help,
       editor_request: self.editor_request.is_some(),
@@ -100,10 +109,16 @@ impl App {
   }
 
   fn handle_key_token(&mut self, token: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    match self
-      .key_dispatcher
-      .dispatch(&self.keymap, self.key_context(), token)
-    {
+    let result = if self.view == ViewMode::Bookmarks {
+      self
+        .key_dispatcher
+        .dispatch(&self.bookmarks_keymap, self.key_context(), token)
+    } else {
+      self
+        .key_dispatcher
+        .dispatch(&self.keymap, self.key_context(), token)
+    };
+    match result {
       MatchResult::Action(action) => self.handle_action(&action, tx),
       MatchResult::Prefix(_) | MatchResult::None => {}
     }
@@ -139,11 +154,22 @@ impl App {
       "clear-cache" | "clear_cache" => self.request_clear_cache(tx),
       "refresh" => self.request_refresh(tx),
       "metadata" => self.enter_metadata_view(),
+      "bookmarks" => self.enter_bookmarks_view(),
       "edit_metadata" => self.start_metadata_edit(),
+      "edit_bookmarks" => self.start_bookmarks_edit(),
       "metadata_scroll_down" => self.metadata_scroll_down(),
       "metadata_scroll_up" => self.metadata_scroll_up(),
       "metadata_page_down" => self.metadata_page_down(),
       "metadata_page_up" => self.metadata_page_up(),
+      "bookmarks_next" => self.bookmarks_next(),
+      "bookmarks_previous" => self.bookmarks_previous(),
+      "bookmarks_page_down" => self.bookmarks_page_down(),
+      "bookmarks_page_up" => self.bookmarks_page_up(),
+      "bookmarks_toggle" => self.bookmarks_toggle(),
+      "bookmarks_toggle_all" => self.bookmarks_toggle_all(),
+      "bookmarks_open" => self.bookmarks_open(),
+      "bookmarks_panel_narrower" => self.bookmarks_panel_narrower(),
+      "bookmarks_panel_wider" => self.bookmarks_panel_wider(),
       other => self.set_message(format!("unknown action: {other}")),
     }
   }
@@ -203,6 +229,33 @@ impl App {
           let _ = tx.send(AsyncEvent::MetadataWrite(MetadataWriteOutcome {
             result,
             changed_tags,
+          }));
+        });
+      }
+      ConfirmDialog::BookmarksWrite { edit } => {
+        let path = self.document.path.clone();
+        let cache_dir = self.document.page_cache_dir.clone();
+        let app_cache_dir = self.settings.cache_dir.clone();
+        let render = self.settings.config.render.clone();
+        let pdftk_bin = self.settings.config.render.pdftk_bin.clone();
+        let changed_bookmarks = edit.new_count();
+        let tx = tx.clone();
+        self.set_message(format!(
+          "applying bookmark edit: {changed_bookmarks} entries"
+        ));
+        tokio::task::spawn_blocking(move || {
+          let result = (|| {
+            bookmarks::write_pdf_bookmarks_with_pdftk(
+              &path,
+              &pdftk_bin,
+              &app_cache_dir,
+              &edit.bookmarks,
+            )?;
+            reload_document(path, cache_dir, render)
+          })();
+          let _ = tx.send(AsyncEvent::BookmarksWrite(BookmarksWriteOutcome {
+            result,
+            changed_bookmarks,
           }));
         });
       }
@@ -365,6 +418,7 @@ impl App {
         }
       }
       "metadata" => self.enter_metadata_view(),
+      "bookmarks" => self.enter_bookmarks_view(),
       "refresh" => self.request_refresh(tx),
       "help" => self.show_key_help(),
       other => self.set_message(format!("unknown command: {other}")),
@@ -502,5 +556,10 @@ fn reload_document(
   let document =
     PdfDocument::open(path.clone(), cache_dir, &render).map_err(|error| error.to_string())?;
   let metadata = metadata::read_pdf_metadata(&path);
-  Ok(DocumentReload { document, metadata })
+  let bookmarks = bookmarks::read_pdf_bookmarks(&path, &render.pdftk_bin, document.page_count);
+  Ok(DocumentReload {
+    document,
+    metadata,
+    bookmarks,
+  })
 }

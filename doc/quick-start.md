@@ -56,4 +56,5 @@ Basic workflow:
 4. Use `:layout scroll 2 3` to save the layout to `config.toml`.
 5. Press `r` or run `:refresh` after regenerating the PDF.
 6. Press `m` to inspect metadata, then `e` to edit supported PDF metadata.
-7. Press `q` to quit.
+7. Press `b` to inspect bookmarks, then `e` to edit PDF bookmarks.
+8. Press `q` to quit.

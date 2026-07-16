@@ -1,4 +1,5 @@
 mod app;
+mod bookmarks;
 mod cache;
 mod config;
 mod event;
@@ -179,6 +180,9 @@ async fn main() -> Result<()> {
       match request {
         EditorRequest::Metadata { original, .. } => {
           app.finish_metadata_editor_input(original, result)
+        }
+        EditorRequest::Bookmarks { original, .. } => {
+          app.finish_bookmarks_editor_input(original, result)
         }
       }
       resume_result?;
@@ -383,6 +387,25 @@ fn handle_async_event(
         true
       }
     },
+    AsyncEvent::BookmarksWrite(outcome) => match outcome.result {
+      Ok(reload) => {
+        apply_document_reload(reload, app, page_store, renderer);
+        app.set_message(format!(
+          "bookmarks updated: {} entries",
+          outcome.changed_bookmarks
+        ));
+        info!(
+          changed_bookmarks = outcome.changed_bookmarks,
+          "bookmarks write finished"
+        );
+        true
+      }
+      Err(error) => {
+        app.set_message(format!("bookmarks write failed: {error}"));
+        warn!(%error, "bookmarks write failed");
+        true
+      }
+    },
     AsyncEvent::CacheClear(outcome) => match outcome.result {
       Ok(report) => {
         app.clear_cached_images();
@@ -424,7 +447,7 @@ fn apply_document_reload(
   renderer: &mut RenderStore,
 ) {
   let document = reload.document.clone();
-  app.apply_document_reload(reload.document, reload.metadata);
+  app.apply_document_reload(reload.document, reload.metadata, reload.bookmarks);
   page_store.replace_document(document);
   renderer.clear_state();
 }
