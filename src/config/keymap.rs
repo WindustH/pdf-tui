@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeymapConfig {
-  pub browser: KeymapSection,
-  pub detail: KeymapSection,
+  pub viewer: KeymapSection,
+  pub metadata: KeymapSection,
   #[serde(default = "default_input_keymap_section")]
   pub input: KeymapSection,
   pub global: KeymapSection,
@@ -36,10 +36,11 @@ pub enum KeymapOn {
 impl Default for KeymapConfig {
   fn default() -> Self {
     Self {
-      browser: KeymapSection {
+      viewer: KeymapSection {
         keymap: vec![
           key("q", "quit", "Quit pdf-tui"),
           key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("f1", "help", "Show viewer key bindings"),
           key("j", "scroll_down", "Scroll down"),
           key("down", "scroll_down", "Scroll down"),
           key("k", "scroll_up", "Scroll up"),
@@ -51,10 +52,12 @@ impl Default for KeymapConfig {
           key(["g", "g"], "home", "Go to first page"),
           key("end", "end", "Go to last page"),
           key("G", "end", "Go to last page"),
-          key("h", "previous_page", "Previous page"),
-          key("left", "previous_page", "Previous page"),
-          key("l", "next_page", "Next page"),
-          key("right", "next_page", "Next page"),
+          key("h", "page_up", "Move one page up"),
+          key("left", "page_up", "Move one page up"),
+          key("l", "page_down", "Move one page down"),
+          key("right", "page_down", "Move one page down"),
+          key("r", "refresh", "Refresh current PDF"),
+          key("m", "metadata", "Show PDF metadata"),
           key(
             ["L", "s"],
             "layout scroll 1 3",
@@ -63,7 +66,26 @@ impl Default for KeymapConfig {
           key(["L", "g"], "layout grid 2 2", "Use 2x2 grid layout"),
         ],
       },
-      detail: KeymapSection::default(),
+      metadata: KeymapSection {
+        keymap: vec![
+          key("q", "back", "Return to viewer"),
+          key("esc", "back", "Return to viewer"),
+          key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("f1", "help", "Show metadata key bindings"),
+          key("e", "edit_metadata", "Edit PDF metadata"),
+          key("j", "metadata_scroll_down", "Scroll metadata down"),
+          key("down", "metadata_scroll_down", "Scroll metadata down"),
+          key("k", "metadata_scroll_up", "Scroll metadata up"),
+          key("up", "metadata_scroll_up", "Scroll metadata up"),
+          key("pgdn", "metadata_page_down", "Scroll metadata page down"),
+          key(
+            "pagedown",
+            "metadata_page_down",
+            "Scroll metadata page down",
+          ),
+          key("pgup", "metadata_page_up", "Scroll metadata page up"),
+        ],
+      },
       input: default_input_keymap_section(),
       global: KeymapSection {
         keymap: vec![key(":", "command", "Enter command")],
@@ -75,8 +97,8 @@ impl Default for KeymapConfig {
 impl KeymapConfig {
   pub fn bindings(&self) -> KeyBindings {
     KeyBindings::from_sections(
-      binding_configs(&self.browser.keymap),
-      binding_configs(&self.detail.keymap),
+      binding_configs(&self.viewer.keymap),
+      binding_configs(&self.metadata.keymap),
       binding_configs(&self.input.keymap),
       binding_configs(&self.global.keymap),
     )
@@ -84,8 +106,8 @@ impl KeymapConfig {
 
   pub(super) fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
-    append_missing_actions(&mut self.browser.keymap, &default.browser.keymap);
-    append_missing_actions(&mut self.detail.keymap, &default.detail.keymap);
+    append_missing_actions(&mut self.viewer.keymap, &default.viewer.keymap);
+    append_missing_actions(&mut self.metadata.keymap, &default.metadata.keymap);
     append_missing_actions(&mut self.input.keymap, &default.input.keymap);
     append_missing_actions(&mut self.global.keymap, &default.global.keymap);
   }
@@ -93,8 +115,8 @@ impl KeymapConfig {
 
 pub(super) fn format_keymap_toml(config: &KeymapConfig) -> String {
   let mut out = String::new();
-  push_keymap_section(&mut out, "browser", &config.browser);
-  push_keymap_section(&mut out, "detail", &config.detail);
+  push_keymap_section(&mut out, "viewer", &config.viewer);
+  push_keymap_section(&mut out, "metadata", &config.metadata);
   push_keymap_section(&mut out, "input", &config.input);
   push_keymap_section(&mut out, "global", &config.global);
   out
@@ -131,6 +153,7 @@ fn default_input_keymap_section() -> KeymapSection {
   KeymapSection {
     keymap: vec![
       key("esc", "cancel", "Cancel input"),
+      key("f1", "help", "Show input key bindings"),
       key("enter", "submit", "Submit input"),
       key("backspace", "backspace", "Delete before cursor"),
       key("delete", "delete", "Delete under cursor"),

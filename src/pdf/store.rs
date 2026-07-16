@@ -70,6 +70,11 @@ impl PageStore {
     self.slice_completed.clear();
   }
 
+  pub fn replace_document(&mut self, document: PdfDocument) {
+    self.document = document;
+    self.clear_state();
+  }
+
   pub fn request_slice(&mut self, spec: PageSliceSpec, tx: &mpsc::UnboundedSender<AsyncEvent>) {
     self.request_slice_with_permits(spec, tx, None, false);
   }
@@ -149,6 +154,8 @@ impl PageStore {
       "spawned page slice render request"
     );
     let document = self.document.clone();
+    let source_size_bytes = document.size_bytes;
+    let source_modified_nanos = document.modified_nanos;
     let tx = tx.clone();
     let semaphore = self.semaphore.clone();
     tokio::spawn(async move {
@@ -165,6 +172,8 @@ impl PageStore {
         Err(error) => Err(error),
       };
       let _ = tx.send(AsyncEvent::Page(PageOutcome {
+        source_size_bytes,
+        source_modified_nanos,
         page_index: spec.page_index,
         target_width: spec.target_width,
         target_height: spec.target_height,
@@ -271,6 +280,8 @@ impl PageStore {
       "spawned page render request"
     );
     let document = self.document.clone();
+    let source_size_bytes = document.size_bytes;
+    let source_modified_nanos = document.modified_nanos;
     let tx = tx.clone();
     let semaphore = self.semaphore.clone();
     tokio::spawn(async move {
@@ -287,6 +298,8 @@ impl PageStore {
         Err(error) => Err(error),
       };
       let _ = tx.send(AsyncEvent::Page(PageOutcome {
+        source_size_bytes,
+        source_modified_nanos,
         page_index,
         target_width: key.target_width,
         target_height: key.target_height,

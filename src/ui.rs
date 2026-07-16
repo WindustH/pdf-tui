@@ -1,5 +1,7 @@
 mod footer;
 mod grid;
+mod metadata_view;
+mod modal;
 mod page;
 mod preload;
 mod scroll;
@@ -15,7 +17,11 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::{
-  app::App, event::AsyncEvent, pdf::PageStore, render::RenderStore, terminal::FrameOutput,
+  app::{App, ViewMode},
+  event::AsyncEvent,
+  pdf::PageStore,
+  render::RenderStore,
+  terminal::FrameOutput,
 };
 
 pub fn draw(
@@ -60,6 +66,19 @@ pub fn draw(
     &mut cursor_position,
     frame_message.as_deref(),
   );
+  if app.confirm.is_some() {
+    modal::draw_confirm(frame, app, area);
+  }
+  if app.key_help {
+    modal::draw_key_help(frame, app, area);
+  }
+  if app.confirm.is_some() || app.key_help {
+    overlays.clear();
+    cursor_position = None;
+    preserve_overlays = false;
+    preserve_areas.clear();
+    drawn_render_keys.clear();
+  }
   let protocol_writes = if preserve_overlays {
     renderer.take_protocol_writes(&drawn_render_keys, false)
   } else {
@@ -120,6 +139,11 @@ fn draw_main(
 
   if app.document.page_count == 0 {
     frame.render_widget(Paragraph::new("No pages"), area);
+    return;
+  }
+
+  if app.view == ViewMode::Metadata {
+    metadata_view::draw_metadata(frame, app, area);
     return;
   }
 

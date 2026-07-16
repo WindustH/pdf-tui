@@ -91,3 +91,10 @@ Chafa symbols, or ASCII fallback.
 Behavior fields:
 
 - `scroll_lines`: retained for keyboard scroll compatibility
+- `auto_refresh`: enable a background watcher for the opened PDF
+- `auto_refresh_poll_ms`: file change polling interval
+- `auto_refresh_min_interval_ms`: minimum interval between automatic refresh requests
+
+Automatic refresh is disabled by default. When enabled, `pdf-tui` watches the
+opened PDF file signature and requests a refresh after updates. Repeated updates
+are rate limited by `auto_refresh_min_interval_ms`.

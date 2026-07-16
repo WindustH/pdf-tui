@@ -15,6 +15,7 @@ pub struct Tui {
   terminal: Terminal<CrosstermBackend<Stderr>>,
   protocol_renderer: ProtocolFrameRenderer,
   protocol_reset: Option<String>,
+  suspended: bool,
   restored: bool,
 }
 
@@ -35,6 +36,7 @@ impl Tui {
       terminal,
       protocol_renderer: ProtocolFrameRenderer::default(),
       protocol_reset,
+      suspended: false,
       restored: false,
     })
   }
@@ -56,13 +58,53 @@ impl Tui {
       .clear_and_reset(backend, self.protocol_reset.as_deref())?;
     disable_raw_mode()?;
     self.terminal.show_cursor()?;
+    if !self.suspended {
+      execute!(
+        self.terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+      )?;
+    }
+    self.suspended = true;
+    self.restored = true;
+    Ok(())
+  }
+
+  pub fn suspend(&mut self) -> Result<()> {
+    if self.suspended {
+      return Ok(());
+    }
+    let backend = self.terminal.backend_mut();
+    self
+      .protocol_renderer
+      .clear_and_reset(backend, self.protocol_reset.as_deref())?;
+    disable_raw_mode()?;
+    self.terminal.show_cursor()?;
     execute!(
       self.terminal.backend_mut(),
       LeaveAlternateScreen,
       DisableMouseCapture,
       DisableBracketedPaste
     )?;
-    self.restored = true;
+    self.suspended = true;
+    Ok(())
+  }
+
+  pub fn resume(&mut self) -> Result<()> {
+    if !self.suspended {
+      return Ok(());
+    }
+    enable_raw_mode()?;
+    execute!(
+      self.terminal.backend_mut(),
+      EnterAlternateScreen,
+      EnableMouseCapture,
+      EnableBracketedPaste
+    )?;
+    self.terminal.clear()?;
+    reset_protocol_images(self.terminal.backend_mut(), self.protocol_reset.as_deref())?;
+    self.suspended = false;
     Ok(())
   }
 }

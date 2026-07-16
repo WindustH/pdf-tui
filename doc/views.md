@@ -46,3 +46,11 @@ Reading progress is 0-based. The start of the first page is `0.0`.
 The progress model combines visible page regions into a weighted value. When
 switching layouts, `pdf-tui` finds the closest legal state in the new layout
 so the visible reading position remains stable.
+
+## Metadata
+
+The metadata view shows PDF file information and PDF metadata reported by
+`exiftool`.
+
+Editable fields are written through `exiftool` after an explicit confirmation.
+The default viewer key is `m`; the default metadata edit key is `e`.

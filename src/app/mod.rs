@@ -2,14 +2,45 @@ mod input;
 mod navigation;
 mod progress;
 
-use framework_tui::{CommandCompletion, CommandState, KeyBindings, KeyDispatcher, KeyHint, Prompt};
+use framework_tui::{
+  CommandCompletion, CommandState, KeyBindings, KeyContext, KeyDispatcher, KeyHelpEntry, KeyHint,
+  Prompt,
+};
 use ratatui::layout::Rect;
 
 use crate::{
   config::{EffectiveLayoutConfig, Settings},
   layout::ScrollLayout,
+  metadata::{self, MetadataEdit, PdfMetadataEntry},
   pdf::{PageImage, PageSliceSpec, PdfDocument},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+  Viewer,
+  Metadata,
+}
+
+#[derive(Debug, Clone)]
+pub enum EditorRequest {
+  Metadata {
+    original: Vec<PdfMetadataEntry>,
+    draft: String,
+  },
+}
+
+impl EditorRequest {
+  pub fn initial_text(&self) -> &str {
+    match self {
+      Self::Metadata { draft, .. } => draft,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfirmDialog {
+  MetadataWrite { edit: MetadataEdit },
+}
 
 pub struct App {
   pub document: PdfDocument,
@@ -28,9 +59,18 @@ pub struct App {
   pub last_scroll_layout: Option<ScrollLayout>,
   pub terminal_cell_pixels: Option<(u16, u16)>,
   pub prompt: Option<Prompt>,
+  pub view: ViewMode,
+  pub metadata: Vec<PdfMetadataEntry>,
+  pub metadata_error: Option<String>,
+  pub metadata_scroll: u16,
+  pub confirm: Option<ConfirmDialog>,
+  pub key_help: bool,
   pub message: String,
   pending_progress: Option<f64>,
+  refresh_in_flight: bool,
+  refresh_queued: bool,
   quit: bool,
+  editor_request: Option<EditorRequest>,
   command_state: CommandState,
   key_dispatcher: KeyDispatcher,
 }
@@ -40,6 +80,11 @@ struct InputRedrawState {
   scroll: u32,
   grid_start_page: usize,
   focused_page: usize,
+  view: ViewMode,
+  metadata_scroll: u16,
+  confirm: bool,
+  key_help: bool,
+  editor_request: bool,
   layout: String,
   message: String,
   quit: bool,
@@ -66,6 +111,10 @@ impl App {
     let keymap = settings.keymap.bindings();
     let layout = settings.config.layout.effective();
     let page_count = document.page_count;
+    let (metadata, metadata_error) = match metadata::read_pdf_metadata(&document.path) {
+      Ok(metadata) => (metadata, None),
+      Err(error) => (Vec::new(), Some(error)),
+    };
     Self {
       document,
       settings,
@@ -83,9 +132,18 @@ impl App {
       last_scroll_layout: None,
       terminal_cell_pixels: None,
       prompt: None,
+      view: ViewMode::Viewer,
+      metadata,
+      metadata_error,
+      metadata_scroll: 0,
+      confirm: None,
+      key_help: false,
       message: "ready".to_string(),
       pending_progress: None,
+      refresh_in_flight: false,
+      refresh_queued: false,
       quit: false,
+      editor_request: None,
       command_state: CommandState::default(),
       key_dispatcher: KeyDispatcher::default(),
     }
@@ -103,8 +161,16 @@ impl App {
     self.command_state.completion()
   }
 
+  pub fn take_editor_request(&mut self) -> Option<EditorRequest> {
+    self.editor_request.take()
+  }
+
   pub fn set_message(&mut self, message: impl Into<String>) {
     self.message = message.into();
+  }
+
+  pub fn set_editor_request(&mut self, request: EditorRequest) {
+    self.editor_request = Some(request);
   }
 
   pub fn clear_cached_images(&mut self) {
@@ -112,6 +178,129 @@ impl App {
     self.slices.clear();
     self.page_errors.fill(None);
     self.slice_errors.clear();
+  }
+
+  pub fn apply_document_reload(
+    &mut self,
+    document: PdfDocument,
+    metadata: Result<Vec<PdfMetadataEntry>, String>,
+  ) {
+    let progress = self.current_progress().or(self.pending_progress);
+    let page_count = document.page_count;
+    self.document = document;
+    self.pages = vec![None; page_count];
+    self.slices.clear();
+    self.page_errors = vec![None; page_count];
+    self.slice_errors.clear();
+    self.last_scroll_layout = None;
+    self.focused_page = self.focused_page.min(page_count.saturating_sub(1));
+    self.grid_start_page = self.grid_start_page.min(page_count.saturating_sub(1));
+    self.scroll = 0;
+    match metadata {
+      Ok(metadata) => {
+        self.metadata = metadata;
+        self.metadata_error = None;
+      }
+      Err(error) => {
+        self.metadata.clear();
+        self.metadata_error = Some(error);
+      }
+    }
+    self.metadata_scroll = 0;
+    if let Some(progress) = progress {
+      self.set_progress_target(progress);
+    } else {
+      self.normalize_current_layout_state();
+    }
+  }
+
+  pub fn finish_metadata_editor_input(
+    &mut self,
+    original: Vec<PdfMetadataEntry>,
+    result: Result<String, String>,
+  ) {
+    let edited = match result {
+      Ok(edited) => edited,
+      Err(error) => {
+        self.set_message(format!("editor failed: {error}"));
+        return;
+      }
+    };
+    let edit = match metadata::metadata_changes_from_edit(&original, &edited) {
+      Ok(edit) => edit,
+      Err(error) => {
+        self.set_message(format!("metadata edit failed: {error}"));
+        return;
+      }
+    };
+    if edit.is_empty() {
+      self.set_message("metadata unchanged");
+      return;
+    }
+    let count = edit.change_count();
+    self.confirm = Some(ConfirmDialog::MetadataWrite { edit });
+    self.set_message(format!("confirm metadata changes: {count} change(s)"));
+  }
+
+  pub fn finish_refresh_request(&mut self) -> bool {
+    self.refresh_in_flight = false;
+    std::mem::take(&mut self.refresh_queued)
+  }
+
+  pub fn show_key_help(&mut self) {
+    self.key_help = true;
+    self.key_dispatcher.clear();
+    self.set_message("key bindings");
+  }
+
+  pub fn key_help_title(&self) -> &'static str {
+    if self.prompt.is_some() {
+      return "Input key bindings";
+    }
+    match self.view {
+      ViewMode::Viewer => "Viewer key bindings",
+      ViewMode::Metadata => "Metadata key bindings",
+    }
+  }
+
+  pub fn key_help_entries(&self) -> Vec<KeyHelpEntry> {
+    if self.prompt.is_some() {
+      return self
+        .keymap
+        .help_entries_filtered(KeyContext::Input, |action| {
+          input_action_available(action, true)
+        });
+    }
+
+    self
+      .keymap
+      .help_entries_filtered(self.key_context(), |action| self.action_available(action))
+  }
+
+  pub fn key_context(&self) -> KeyContext {
+    match self.view {
+      ViewMode::Viewer => KeyContext::Browser,
+      ViewMode::Metadata => KeyContext::Detail,
+    }
+  }
+
+  pub fn action_available(&self, action: &str) -> bool {
+    if action.starts_with("layout ") || action.starts_with("layout-use ") {
+      return self.view == ViewMode::Viewer;
+    }
+    match action {
+      "quit" | "command" | "help" => true,
+      "clear-cache" | "clear_cache" | "refresh" => true,
+      "scroll_down" | "scroll_up" | "page_down" | "page_up" | "next_page" | "previous_page"
+      | "home" | "end" | "metadata" => self.view == ViewMode::Viewer,
+      "back"
+      | "edit_metadata"
+      | "metadata_scroll_down"
+      | "metadata_scroll_up"
+      | "metadata_page_down"
+      | "metadata_page_up" => self.view == ViewMode::Metadata,
+      _ => false,
+    }
   }
 
   pub fn finish_page(&mut self, page_index: usize, result: Result<PageImage, String>) {
@@ -181,4 +370,12 @@ impl App {
       .grid_start_page
       .min(self.document.page_count.saturating_sub(1));
   }
+}
+
+fn input_action_available(action: &str, command_prompt: bool) -> bool {
+  command_prompt
+    || !matches!(
+      action,
+      "completion_next" | "completion_previous" | "history_previous" | "history_next"
+    )
 }

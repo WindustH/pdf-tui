@@ -54,4 +54,6 @@ Basic workflow:
 2. Press `:` to enter a command.
 3. Use `:layout-use scroll 2 3` for a temporary layout change.
 4. Use `:layout scroll 2 3` to save the layout to `config.toml`.
-5. Press `q` to quit.
+5. Press `r` or run `:refresh` after regenerating the PDF.
+6. Press `m` to inspect metadata, then `e` to edit supported PDF metadata.
+7. Press `q` to quit.

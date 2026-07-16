@@ -1,6 +1,8 @@
+use std::path::PathBuf;
+
 use crossterm::event::{Event, KeyEvent, MouseEventKind};
 use framework_tui::{
-  CommandCompletion, KeyContext, MatchResult, Prompt, PromptInputResult, current_word_start,
+  CommandCompletion, MatchResult, Prompt, PromptInputResult, current_word_start,
   filter_completion_candidates, handle_prompt_key as framework_handle_prompt_key,
   handle_prompt_paste as framework_handle_prompt_paste, key_event_to_token,
 };
@@ -8,17 +10,26 @@ use tokio::sync::mpsc;
 
 use crate::{
   cache, config,
-  event::{AsyncEvent, CacheClearOutcome},
+  event::{
+    AsyncEvent, CacheClearOutcome, DocumentReload, DocumentReloadOutcome, MetadataWriteOutcome,
+  },
+  metadata,
+  pdf::PdfDocument,
 };
 
-use super::{App, CompletionRedrawState, InputRedrawState, PromptRedrawState};
+use super::{
+  App, CompletionRedrawState, ConfirmDialog, EditorRequest, InputRedrawState, PromptRedrawState,
+  ViewMode,
+};
 
 const COMMAND_NAMES: &[&str] = &[
   "clear-cache",
   "help",
   "layout",
   "layout-use",
+  "metadata",
   "quit",
+  "refresh",
   "write-config",
 ];
 
@@ -26,6 +37,14 @@ impl App {
   pub fn handle_input(&mut self, input: Event, tx: &mpsc::UnboundedSender<AsyncEvent>) -> bool {
     let force_redraw = matches!(input, Event::Resize(_, _));
     let before = self.input_redraw_state();
+    if self.key_help {
+      self.handle_key_help_input(input);
+      return force_redraw || before != self.input_redraw_state();
+    }
+    if self.confirm.is_some() {
+      self.handle_confirm_input(input, tx);
+      return force_redraw || before != self.input_redraw_state();
+    }
     match input {
       Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
       Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
@@ -36,6 +55,10 @@ impl App {
         self.handle_key_token(token, tx);
       }
       Event::Mouse(mouse) => match mouse.kind {
+        MouseEventKind::ScrollDown if self.view == ViewMode::Metadata => {
+          self.metadata_scroll_down()
+        }
+        MouseEventKind::ScrollUp if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
         MouseEventKind::ScrollDown => self.scroll_down(),
         MouseEventKind::ScrollUp => self.scroll_up(),
         _ => {}
@@ -62,6 +85,11 @@ impl App {
       scroll: self.scroll,
       grid_start_page: self.grid_start_page,
       focused_page: self.focused_page,
+      view: self.view,
+      metadata_scroll: self.metadata_scroll,
+      confirm: self.confirm.is_some(),
+      key_help: self.key_help,
+      editor_request: self.editor_request.is_some(),
       layout: self.layout.label(),
       message: self.message.clone(),
       quit: self.quit,
@@ -74,7 +102,7 @@ impl App {
   fn handle_key_token(&mut self, token: String, tx: &mpsc::UnboundedSender<AsyncEvent>) {
     match self
       .key_dispatcher
-      .dispatch(&self.keymap, KeyContext::Browser, token)
+      .dispatch(&self.keymap, self.key_context(), token)
     {
       MatchResult::Action(action) => self.handle_action(&action, tx),
       MatchResult::Prefix(_) | MatchResult::None => {}
@@ -93,7 +121,13 @@ impl App {
 
     match action {
       "quit" => self.quit = true,
+      "back" => self.back_to_viewer(),
       "command" => self.start_command(),
+      "help" => self.show_key_help(),
+      "scroll_down" if self.view == ViewMode::Metadata => self.metadata_scroll_down(),
+      "scroll_up" if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
+      "page_down" if self.view == ViewMode::Metadata => self.metadata_page_down(),
+      "page_up" if self.view == ViewMode::Metadata => self.metadata_page_up(),
       "scroll_down" => self.scroll_down(),
       "scroll_up" => self.scroll_up(),
       "page_down" => self.page_down(),
@@ -103,7 +137,75 @@ impl App {
       "home" => self.home(),
       "end" => self.end(),
       "clear-cache" | "clear_cache" => self.request_clear_cache(tx),
+      "refresh" => self.request_refresh(tx),
+      "metadata" => self.enter_metadata_view(),
+      "edit_metadata" => self.start_metadata_edit(),
+      "metadata_scroll_down" => self.metadata_scroll_down(),
+      "metadata_scroll_up" => self.metadata_scroll_up(),
+      "metadata_page_down" => self.metadata_page_down(),
+      "metadata_page_up" => self.metadata_page_up(),
       other => self.set_message(format!("unknown action: {other}")),
+    }
+  }
+
+  fn handle_confirm_input(&mut self, input: Event, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    let Event::Key(key) = input else {
+      return;
+    };
+    let Some(token) = key_event_to_token(key) else {
+      return;
+    };
+    match token.as_str() {
+      "y" => self.apply_confirm(tx),
+      "enter" | "n" | "q" | "esc" => {
+        self.confirm = None;
+        self.set_message("cancelled");
+      }
+      _ => {}
+    }
+  }
+
+  fn handle_key_help_input(&mut self, input: Event) {
+    match input {
+      Event::Key(key) => {
+        let Some(token) = key_event_to_token(key) else {
+          return;
+        };
+        match token.as_str() {
+          "f1" | "enter" | "esc" | "q" => {
+            self.key_help = false;
+            self.set_message("closed key bindings");
+          }
+          _ => {}
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn apply_confirm(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    let Some(confirm) = self.confirm.take() else {
+      return;
+    };
+    match confirm {
+      ConfirmDialog::MetadataWrite { edit } => {
+        let path = self.document.path.clone();
+        let cache_dir = self.document.page_cache_dir.clone();
+        let render = self.settings.config.render.clone();
+        let changed_tags = edit.tags.len();
+        let tx = tx.clone();
+        self.set_message(format!("applying metadata edit: {changed_tags} tag(s)"));
+        tokio::task::spawn_blocking(move || {
+          let result = (|| {
+            metadata::write_pdf_metadata_with_exiftool(&path, &edit.tags)?;
+            reload_document(path, cache_dir, render)
+          })();
+          let _ = tx.send(AsyncEvent::MetadataWrite(MetadataWriteOutcome {
+            result,
+            changed_tags,
+          }));
+        });
+      }
     }
   }
 
@@ -146,6 +248,7 @@ impl App {
       PromptInputResult::EditInEditor { .. } => {
         self.set_message("external editor input is not supported in pdf-tui");
       }
+      PromptInputResult::UnknownAction(action) if action == "help" => self.show_key_help(),
       PromptInputResult::UnknownAction(action) => {
         self.set_message(format!("unknown input action: {action}"));
       }
@@ -261,7 +364,9 @@ impl App {
           self.request_clear_cache(tx);
         }
       }
-      "help" => self.set_message("commands: layout, layout-use, write-config, clear-cache, quit"),
+      "metadata" => self.enter_metadata_view(),
+      "refresh" => self.request_refresh(tx),
+      "help" => self.show_key_help(),
       other => self.set_message(format!("unknown command: {other}")),
     }
   }
@@ -276,6 +381,75 @@ impl App {
         .map_err(|error| error.to_string());
       let _ = tx.send(AsyncEvent::CacheClear(CacheClearOutcome { result }));
     });
+  }
+
+  pub fn request_refresh(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if self.refresh_in_flight {
+      self.refresh_queued = true;
+      self.set_message("refresh already running; queued one more refresh");
+      return;
+    }
+    let path = self.document.path.clone();
+    let cache_dir = self.document.page_cache_dir.clone();
+    let render = self.settings.config.render.clone();
+    let tx = tx.clone();
+    self.refresh_in_flight = true;
+    self.set_message("refreshing document...");
+    tokio::task::spawn_blocking(move || {
+      let result = reload_document(path, cache_dir, render);
+      let _ = tx.send(AsyncEvent::Refresh(DocumentReloadOutcome { result }));
+    });
+  }
+
+  fn enter_metadata_view(&mut self) {
+    self.view = ViewMode::Metadata;
+    self.metadata_scroll = 0;
+    self.key_dispatcher.clear();
+    if let Some(error) = &self.metadata_error {
+      self.set_message(format!("metadata unavailable: {error}"));
+    } else {
+      self.set_message("metadata");
+    }
+  }
+
+  fn back_to_viewer(&mut self) {
+    self.view = ViewMode::Viewer;
+    self.metadata_scroll = 0;
+    self.key_dispatcher.clear();
+    self.set_message("ready");
+  }
+
+  fn start_metadata_edit(&mut self) {
+    if self.view != ViewMode::Metadata {
+      self.enter_metadata_view();
+      return;
+    }
+    let draft = metadata::metadata_edit_draft(&self.document.path, &self.metadata);
+    self.set_editor_request(EditorRequest::Metadata {
+      original: self.metadata.clone(),
+      draft,
+    });
+    self.set_message("editing metadata");
+  }
+
+  fn metadata_scroll_down(&mut self) {
+    self.metadata_scroll = self.metadata_scroll.saturating_add(1);
+  }
+
+  fn metadata_scroll_up(&mut self) {
+    self.metadata_scroll = self.metadata_scroll.saturating_sub(1);
+  }
+
+  fn metadata_page_down(&mut self) {
+    self.metadata_scroll = self
+      .metadata_scroll
+      .saturating_add(self.viewport_height.max(1));
+  }
+
+  fn metadata_page_up(&mut self) {
+    self.metadata_scroll = self
+      .metadata_scroll
+      .saturating_sub(self.viewport_height.max(1));
   }
 
   fn execute_layout_command(&mut self, command: &str, persist: bool) {
@@ -318,4 +492,15 @@ impl App {
       Err(error) => self.set_message(error),
     }
   }
+}
+
+fn reload_document(
+  path: PathBuf,
+  cache_dir: PathBuf,
+  render: config::RenderConfig,
+) -> Result<DocumentReload, String> {
+  let document =
+    PdfDocument::open(path.clone(), cache_dir, &render).map_err(|error| error.to_string())?;
+  let metadata = metadata::read_pdf_metadata(&path);
+  Ok(DocumentReload { document, metadata })
 }

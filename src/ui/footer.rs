@@ -11,7 +11,7 @@ use ratatui::{
   widgets::{Block, Paragraph},
 };
 
-use crate::app::App;
+use crate::app::{App, ViewMode};
 
 pub(super) fn footer_height(app: &App, width: u16) -> u16 {
   let status = 1_u16;
@@ -156,6 +156,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, frame_message: Option<&
     .fg(theme.color(&theme.foreground))
     .bg(theme.color(&theme.background));
   let page = status_page_label(app);
+  let view = status_view_label(app);
   frame.render_widget(
     Paragraph::new(Line::from(vec![
       Span::styled("pdf", style.fg(theme.color(&theme.accent))),
@@ -163,7 +164,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, frame_message: Option<&
         format!(
           "  {page}/{}  {}  {}  {}",
           app.document.page_count,
-          app.layout.label(),
+          view,
           app.document.file_name,
           frame_message.unwrap_or(&app.message)
         ),
@@ -173,6 +174,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, frame_message: Option<&
     .style(style),
     area,
   );
+}
+
+fn status_view_label(app: &App) -> String {
+  match app.view {
+    ViewMode::Viewer => app.layout.label(),
+    ViewMode::Metadata => "metadata".to_string(),
+  }
 }
 
 fn status_page_label(app: &App) -> String {

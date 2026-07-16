@@ -1,23 +1,39 @@
 # Controls
 
-Key bindings are context aware. Browser actions are active while reading the
-PDF. Input actions are active while the command prompt is open.
+Key bindings are context aware. Viewer actions are active while reading the
+PDF. Metadata actions are active in the metadata view. Input actions are active
+while the command prompt is open.
 
-## Browser
+## Viewer
 
 - `q`, `ctrl-c`: quit
+- `f1`: show viewer key bindings
 - `j`, `down`: move down
 - `k`, `up`: move up
 - `pgdn`: move down by a page-style step
 - `pgup`: move up by a page-style step
-- `h`, `left`: previous page
-- `l`, `right`: next page
+- `h`, `left`: move up by a page-style step
+- `l`, `right`: move down by a page-style step
 - `home`, `g g`: first page
 - `end`, `G`: last page
+- `r`: refresh the current PDF from disk
+- `m`: open PDF metadata
 - `L s`: switch to the default scroll layout
 - `L g`: switch to the default grid layout
 - `:`: open command prompt
 - mouse wheel: move up or down
+
+## Metadata
+
+- `q`, `esc`: return to the viewer
+- `f1`: show metadata key bindings
+- `e`: edit PDF metadata in `$EDITOR`
+- `j`, `down`: scroll metadata down
+- `k`, `up`: scroll metadata up
+- `pgdn`: scroll metadata down by one viewport
+- `pgup`: scroll metadata up by one viewport
+- `ctrl-c`: quit
+- `:`: open command prompt
 
 ## Command Prompt
 
@@ -29,6 +45,7 @@ PDF. Input actions are active while the command prompt is open.
 - `ctrl-a`, `ctrl-e`: move to start or end
 - `ctrl-u`, `ctrl-k`: delete before or after cursor
 - `esc`: close the prompt
+- `f1`: show input key bindings
 
 Prompt editing, completion selection, and command history are handled by
 `framework-tui`, matching the interaction model used by `gallery-tui`.
