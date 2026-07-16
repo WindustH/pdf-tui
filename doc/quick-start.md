@@ -1,5 +1,16 @@
 # Quick Start
 
+Install the external tools used at runtime:
+
+```sh
+sudo pacman -S poppler chafa perl-image-exiftool pdftk
+brew install poppler chafa exiftool pdftk-java
+```
+
+`poppler` provides `pdfinfo` and `pdftoppm`, `chafa` provides terminal symbol
+fallback rendering, `exiftool` edits PDF metadata, and `pdftk` reads and writes
+PDF bookmarks. On Homebrew, the `pdftk` command is provided by `pdftk-java`.
+
 Clone the repository with submodules:
 
 ```sh

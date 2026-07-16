@@ -7,7 +7,15 @@ Runtime dependencies:
 - `poppler` for `pdfinfo` and `pdftoppm`
 - `chafa` for terminal symbol rendering fallbacks
 - `exiftool` for editing PDF metadata
-- `pdftk` for reading and editing PDF bookmarks
+- `pdftk` for reading and editing PDF bookmarks. Homebrew provides this
+  command through the `pdftk-java` formula.
+
+Manual dependency install examples:
+
+```sh
+sudo pacman -S poppler chafa perl-image-exiftool pdftk
+brew install poppler chafa exiftool pdftk-java
+```
 
 ## Installation
 
