@@ -23,6 +23,16 @@ Base colors:
 - `hover_selected_background`
 - `error`
 
+Bookmark tree colors:
+
+- `bookmark_hover_foreground`
+- `bookmark_hover_background`
+- `bookmark_page_color`
+- `bookmark_hover_page_color`
+- `bookmark_expanded_color`
+- `bookmark_collapsed_color`
+- `bookmark_leaf_color`
+
 Which-key and completion colors:
 
 - `which_key_columns`

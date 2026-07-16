@@ -102,12 +102,12 @@ fn bookmark_tree_line(app: &App, index: usize, inner_width: u16) -> Line<'static
   let bookmark = &app.bookmarks[index];
   let selected = app.bookmarks_selected == Some(index);
   let background = if selected {
-    theme.color(&theme.accent)
+    theme.color(&theme.bookmark_hover_background)
   } else {
     theme.color(&theme.background)
   };
   let foreground = if selected {
-    theme.color(&theme.background)
+    theme.color(&theme.bookmark_hover_foreground)
   } else {
     theme.color(&theme.foreground)
   };
@@ -119,14 +119,22 @@ fn bookmark_tree_line(app: &App, index: usize, inner_width: u16) -> Line<'static
   };
   let spacer_style = Style::default().bg(background);
   let page_foreground = if selected {
-    theme.color(&theme.foreground)
+    theme.color(&theme.bookmark_hover_page_color)
   } else {
-    theme.color(&theme.muted)
+    theme.color(&theme.bookmark_page_color)
   };
   let page_style = Style::default().fg(page_foreground).bg(background);
-  let expanded_style = status_style(theme.color(&theme.selected_border), background, selected);
-  let collapsed_style = status_style(theme.color(&theme.focused_border), background, selected);
-  let leaf_style = status_style(theme.color(&theme.muted), background, false);
+  let expanded_style = status_style(
+    theme.color(&theme.bookmark_expanded_color),
+    background,
+    selected,
+  );
+  let collapsed_style = status_style(
+    theme.color(&theme.bookmark_collapsed_color),
+    background,
+    selected,
+  );
+  let leaf_style = status_style(theme.color(&theme.bookmark_leaf_color), background, false);
   let has_children = app.bookmark_has_children(index);
   let (marker, marker_style) = if has_children {
     if app.bookmarks_expanded.contains(&index) {
