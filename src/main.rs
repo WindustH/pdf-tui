@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
   let native_config = NativeImageConfig {
     cell_pixels: terminal_capability.cell_pixels,
     passthrough: terminal_capability.passthrough().map(str::to_string),
-    kitty_unicode_placeholders: false,
+    kitty_unicode_placeholders: terminal_capability.kitty_unicode_placeholders(),
   };
   let protocol_reset = render_modes
     .contains(&RenderMode::Kitty)

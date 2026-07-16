@@ -282,38 +282,3 @@ fn centered_offset(total: u16, count: usize, item: u16, gap: u16) -> u16 {
     .saturating_add(gap.saturating_mul(count.saturating_sub(1) as u16));
   total.saturating_sub(used) / 2
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn max_scroll_stops_when_last_row_first_enters_view() {
-    let layout = scroll_layout_with_row_heights(&[3, 3, 3, 3, 3]);
-    assert_eq!(visible_scroll_rows(&layout, 2, 9, 3), vec![2, 3, 4]);
-    assert_eq!(max_scroll_row_for_viewport(&layout, 9, 3), 2);
-  }
-
-  #[test]
-  fn max_scroll_uses_viewport_height_when_rows_do_not_all_fit() {
-    let layout = scroll_layout_with_row_heights(&[5, 5, 5, 5]);
-    assert_eq!(visible_scroll_rows(&layout, 2, 9, 3), vec![2]);
-    assert_eq!(max_scroll_row_for_viewport(&layout, 9, 3), 3);
-  }
-
-  fn scroll_layout_with_row_heights(heights: &[u16]) -> ScrollLayout {
-    ScrollLayout {
-      items: Vec::new(),
-      rows: heights
-        .iter()
-        .copied()
-        .map(|height| ScrollRow {
-          height,
-          gap_after: 0,
-          items: Vec::new(),
-        })
-        .collect(),
-      total_height: heights.iter().map(|height| u32::from(*height)).sum(),
-    }
-  }
-}

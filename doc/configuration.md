@@ -1,0 +1,93 @@
+# Configuration
+
+Default configuration files are created on first run:
+
+- `~/.config/pdf-tui/config.toml`
+- `~/.config/pdf-tui/keymap.toml`
+- `~/.config/pdf-tui/theme.toml`
+
+When existing configuration files are missing fields introduced by a newer
+version, `pdf-tui` normalizes them and writes the parsed defaults back.
+
+## `config.toml`
+
+Top-level tables:
+
+- `[layout]`
+- `[render]`
+- `[behavior]`
+
+## `[layout]`
+
+Layout has one active preset plus shared style fields:
+
+- `active`: preset name to use at startup
+- `active_args`: optional positional arguments for the active preset
+- `gap_x`, `gap_y`: spacing between grid cells or scroll rows
+- `show_border`: show or hide page borders
+- `padding`: content padding inside page frames
+- `presets`: named layouts available to `:layout`
+
+Default presets:
+
+```toml
+[layout.presets.scroll]
+strategy = "scroll"
+params = ["columns", "scroll_divisor"]
+columns = 1
+rows = 1
+scroll_divisor = 3
+show_border = false
+padding = 0
+
+[layout.presets.grid]
+strategy = "grid"
+params = ["rows", "columns"]
+columns = 2
+rows = 2
+scroll_divisor = 3
+show_border = true
+padding = 1
+```
+
+Supported preset fields:
+
+- `strategy`: `scroll` or `grid`
+- `params`: positional parameter names accepted by `:layout`
+- `columns`: page columns
+- `rows`: grid rows
+- `scroll_divisor`: scroll slice divisor
+- `gap_x`, `gap_y`: optional preset-specific spacing overrides
+- `show_border`: optional preset-specific border override
+- `padding`: optional preset-specific padding override
+
+Running `:layout` updates `active` and `active_args` in this file. Running
+`:layout-use` changes only the current session.
+
+## `[render]`
+
+Render fields:
+
+- `pdfinfo_bin`: `pdfinfo` executable
+- `pdftoppm_bin`: `pdftoppm` executable
+- `page_dpi`: base PDF rasterization DPI
+- `chafa_bin`: Chafa executable
+- `auto_detect`: detect terminal graphics support
+- `chafa_args`: extra Chafa fallback arguments
+- `cache_max_bytes`: render cache size limit
+- `cache_compression_level`: zstd compression level
+- `cache_compression_threads`: zstd compression threads
+- `max_concurrent`: maximum concurrent page/render tasks
+- `chafa_threads`: Chafa threads per process
+- `preload_ahead`, `preload_behind`: preload window around the visible region
+- `passthrough`: terminal multiplexer passthrough override
+- `zellij_sixel`: `off`, `auto`, or `on`
+
+`auto_detect` uses `img-tui` terminal probing to choose Kitty, Sixel, iTerm2,
+Chafa symbols, or ASCII fallback.
+
+## `[behavior]`
+
+Behavior fields:
+
+- `scroll_lines`: retained for keyboard scroll compatibility

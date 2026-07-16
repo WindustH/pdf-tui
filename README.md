@@ -1,7 +1,12 @@
 # pdf-tui
 
-`pdf-tui` is a small terminal PDF reader built on `framework-tui` and
-`img-tui`.
+`pdf-tui` is a terminal PDF reader built with `framework-tui` and `img-tui`.
+
+Dependencies are managed as git submodules:
+
+```sh
+git submodule update --init --recursive
+```
 
 ```sh
 pdf-tui /path/to/file.pdf
@@ -20,10 +25,4 @@ clear-cache
 quit
 ```
 
-The scroll layout renders pages at the full available column width and crops the
-visible slice while scrolling. It does not shrink a full page to fit the
-viewport height.
-
-The current renderer uses `pdfinfo` and `pdftoppm` from Poppler to rasterize PDF
-pages lazily into the cache directory before handing the resulting images to
-`img-tui`.
+Full documentation is in [doc/index.md](doc/index.md).

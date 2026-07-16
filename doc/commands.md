@@ -1,0 +1,63 @@
+# Commands
+
+Commands are entered from the prompt opened by `:`.
+
+Prompt controls:
+
+- `tab`: move to the next completion candidate
+- `shift-tab`: move to the previous completion candidate
+- `enter`: insert the selected completion candidate when available, otherwise run the command
+- `up`, `down`: browse command history for the current session
+
+The completion list covers command names and layout preset names. Layout names
+are only completed after `layout` or `layout-use`, not as top-level commands.
+
+## `:layout <name> [args...]`
+
+Switch to a layout preset and write the selected layout back to `config.toml`.
+The selected layout is restored on the next startup.
+
+Examples:
+
+```text
+:layout scroll 1 3
+:layout scroll 2 3
+:layout grid 2 3
+:layout grid 2x3
+```
+
+Default presets:
+
+- `scroll <columns> <scroll_divisor>`: fixed slice-based scroll simulation
+- `grid <rows> <columns>`: fixed page grid
+
+If fewer arguments are supplied, preset defaults are used. Supplying more
+arguments than the preset declares is an error.
+
+## `:layout-use <name> [args...]`
+
+Temporarily switch to a layout preset without writing `config.toml`.
+
+The syntax and preset argument handling are the same as `:layout`.
+
+## `:write-config`
+
+Write the current `config.toml`.
+
+The `:layout` command writes automatically, so this is mainly useful after
+manual configuration edits inside the running session.
+
+## `:clear-cache`
+
+Delete cached PDF pages, rendered terminal streams, and their LRU marker files.
+
+This does not delete logs.
+
+## `:quit`
+
+Quit the program.
+
+Aliases:
+
+- `q`
+- `quit`
