@@ -38,11 +38,20 @@ preload_behind = 2
 
 ## Cache Uses Too Much Space
 
-Lower the cache limit:
+Lower the disk cache limit:
 
 ```toml
 [render]
 cache_max_bytes = 268435456
+```
+
+Lower memory cache limits:
+
+```toml
+[render]
+raw_memory_cache_max_bytes = 16777216
+compressed_memory_cache_max_bytes = 67108864
+prepared_memory_cache_max_bytes = 67108864
 ```
 
 Or clear cache:

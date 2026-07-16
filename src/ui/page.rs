@@ -26,6 +26,7 @@ pub(super) fn draw_slice(
   item: layout::ScrollItem,
   area: Rect,
   viewport: Rect,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -33,6 +34,9 @@ pub(super) fn draw_slice(
   drawn_render_keys: &mut Vec<String>,
 ) -> bool {
   if area.width == 0 || area.height == 0 {
+    return true;
+  }
+  if area_intersects_any(area, obscured_areas) {
     return true;
   }
   let spec = slice_spec_for_item(app, item, viewport);
@@ -154,6 +158,7 @@ pub(super) fn draw_page(
   render_width: u16,
   render_height: u16,
   kind: RenderKind,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -161,6 +166,9 @@ pub(super) fn draw_page(
   drawn_render_keys: &mut Vec<String>,
 ) -> bool {
   if area.width == 0 || area.height == 0 {
+    return true;
+  }
+  if area_intersects_any(area, obscured_areas) {
     return true;
   }
   let (target_width, target_height) = page_target_pixels(
@@ -338,4 +346,18 @@ pub(super) fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {
     horizontal,
     vertical,
   })
+}
+
+pub(super) fn area_intersects_any(area: Rect, others: &[Rect]) -> bool {
+  others
+    .iter()
+    .copied()
+    .any(|other| rects_intersect(area, other))
+}
+
+fn rects_intersect(a: Rect, b: Rect) -> bool {
+  a.x < b.x.saturating_add(b.width)
+    && b.x < a.x.saturating_add(a.width)
+    && a.y < b.y.saturating_add(b.height)
+    && b.y < a.y.saturating_add(a.height)
 }

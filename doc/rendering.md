@@ -2,16 +2,41 @@
 
 Rendering has two stages:
 
-1. `pdftoppm` rasterizes PDF pages or page slices into PNG files.
+1. `pdftoppm` rasterizes PDF pages into PNG files.
 2. `img-tui` or Chafa converts those PNG files into terminal output.
 
 Page PNGs are cached under:
 
 - `~/.cache/pdf-tui/pages/`
 
+Page PNGs are disk-backed. Runtime state keeps only lightweight page metadata
+and short-lived decode buffers used while slicing or preparing terminal output.
+Temporary `pdftoppm` output is written under the system temp directory, usually
+`/tmp/pdf-tui/`, before being copied or renamed into the persistent cache.
+
+`render.pdftoppm_batch_pages` controls how many consecutive pages one
+`pdftoppm` process may render. Batching reduces process startup and PDF reread
+costs during sequential reading and preloading.
+
 Rendered terminal streams are cached under:
 
 - `~/.cache/pdf-tui/render/`
+
+Viewer pages, grid pages, bookmark previews, and search-highlight previews all
+go through the same terminal stream render cache after their source PNG exists.
+
+At runtime, already-rendered terminal streams are first kept in raw memory
+(L1). Cold protocol streams can be compressed in memory (L2). If both memory
+levels miss, `pdf-tui` reads the compressed disk cache (L3). A miss at all
+levels regenerates the data (L4).
+
+Embedded-text search indexes are cached under:
+
+- `~/.cache/pdf-tui/text/`
+
+The search cache avoids rerunning `pdftotext -tsv` when the PDF has not changed.
+Search-highlight preview PNGs are cached under `~/.cache/pdf-tui/search-highlight/`
+and limited by `render.search_highlight_cache_max_bytes`.
 
 ## Page And Slice Cache
 

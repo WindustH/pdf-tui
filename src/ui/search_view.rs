@@ -26,6 +26,7 @@ pub(super) fn draw_search(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -51,6 +52,7 @@ pub(super) fn draw_search(
     renderer,
     tx,
     chunks[1],
+    obscured_areas,
     overlays,
     frame_message,
     preserve_overlays,
@@ -225,6 +227,7 @@ fn draw_search_preview(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -260,6 +263,7 @@ fn draw_search_preview(
     tx,
     &result,
     inner,
+    obscured_areas,
     overlays,
     frame_message,
     preserve_overlays,
@@ -277,6 +281,7 @@ fn draw_highlighted_page(
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   result: &PdfSearchMatch,
   area: Rect,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -284,6 +289,9 @@ fn draw_highlighted_page(
   drawn_render_keys: &mut Vec<String>,
 ) {
   if area.width == 0 || area.height == 0 {
+    return;
+  }
+  if super::page::area_intersects_any(area, obscured_areas) {
     return;
   }
   let (target_width, target_height) = super::page::page_target_pixels(
@@ -321,7 +329,12 @@ fn draw_highlighted_page(
     );
     return;
   };
-  let highlighted = match search::highlighted_page_image(&app.settings.cache_dir, page, result) {
+  let highlighted = match search::highlighted_page_image(
+    &app.settings.cache_dir,
+    page,
+    result,
+    app.settings.config.render.search_highlight_cache_max_bytes,
+  ) {
     Ok(highlighted) => highlighted,
     Err(error) => {
       super::page::draw_centered(frame, area, format!("search highlight failed\n{error}"));

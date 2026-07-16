@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct RenderConfig {
   pub pdfinfo_bin: String,
   pub pdftoppm_bin: String,
+  pub pdftoppm_batch_pages: usize,
   pub pdftk_bin: String,
   pub pdftotext_bin: String,
   pub page_dpi: u16,
@@ -15,6 +16,11 @@ pub struct RenderConfig {
   pub cache_max_bytes: u64,
   pub cache_compression_level: i32,
   pub cache_compression_threads: u32,
+  pub memory_compression: bool,
+  pub raw_memory_cache_max_bytes: u64,
+  pub compressed_memory_cache_max_bytes: u64,
+  pub prepared_memory_cache_max_bytes: u64,
+  pub search_highlight_cache_max_bytes: u64,
   pub max_concurrent: usize,
   pub chafa_threads: usize,
   pub preload_ahead: usize,
@@ -28,6 +34,7 @@ impl Default for RenderConfig {
     Self {
       pdfinfo_bin: "pdfinfo".to_string(),
       pdftoppm_bin: "pdftoppm".to_string(),
+      pdftoppm_batch_pages: 4,
       pdftk_bin: "pdftk".to_string(),
       pdftotext_bin: "pdftotext".to_string(),
       page_dpi: 180,
@@ -43,6 +50,11 @@ impl Default for RenderConfig {
       cache_max_bytes: 512 * 1024 * 1024,
       cache_compression_level: 3,
       cache_compression_threads: 2,
+      memory_compression: true,
+      raw_memory_cache_max_bytes: 32 * 1024 * 1024,
+      compressed_memory_cache_max_bytes: 128 * 1024 * 1024,
+      prepared_memory_cache_max_bytes: 128 * 1024 * 1024,
+      search_highlight_cache_max_bytes: 64 * 1024 * 1024,
       max_concurrent: 4,
       chafa_threads: 1,
       preload_ahead: 4,
@@ -73,5 +85,10 @@ impl RenderConfig {
   pub(super) fn normalize_defaults(&mut self) {
     self.page_dpi = self.page_dpi.max(36);
     self.max_concurrent = self.max_concurrent.max(1);
+    self.pdftoppm_batch_pages = self.pdftoppm_batch_pages.max(1);
+    self.raw_memory_cache_max_bytes = self.raw_memory_cache_max_bytes.max(1);
+    self.compressed_memory_cache_max_bytes = self.compressed_memory_cache_max_bytes.max(1);
+    self.prepared_memory_cache_max_bytes = self.prepared_memory_cache_max_bytes.max(1);
+    self.search_highlight_cache_max_bytes = self.search_highlight_cache_max_bytes.max(1);
   }
 }

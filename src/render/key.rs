@@ -45,13 +45,10 @@ pub(super) fn render_cache_key(
 }
 
 pub(super) fn hash_render_config(hasher: &mut Sha256, config: &RenderConfig) {
-  hasher.update(b"render-v2");
+  hasher.update(b"render-v3");
   hasher.update(config.chafa_bin.as_bytes());
   hasher.update([0]);
   hasher.update(config.chafa_threads.to_le_bytes());
-  hasher.update(config.cache_compression_level.to_le_bytes());
-  hasher.update(config.cache_compression_threads.to_le_bytes());
-  hasher.update([0]);
   if let Some(passthrough) = &config.passthrough {
     hasher.update(passthrough.as_bytes());
   }

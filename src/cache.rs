@@ -1,4 +1,5 @@
 use std::{
+  fs as std_fs,
   path::{Path, PathBuf},
   time::SystemTime,
 };
@@ -70,8 +71,62 @@ pub async fn enforce_render_cache_limit(
   })
 }
 
+pub fn enforce_cache_target_limit_sync(
+  cache_dir: &Path,
+  target: &Path,
+  max_bytes: u64,
+) -> Result<CacheCleanupReport> {
+  if max_bytes == 0 {
+    return Ok(CacheCleanupReport::default());
+  }
+  let mut entries = collect_cache_entries_in_sync(cache_dir, target)?;
+  let before_bytes = entries.iter().map(|entry| entry.size_bytes).sum::<u64>();
+  if before_bytes <= max_bytes {
+    return Ok(CacheCleanupReport {
+      before_bytes,
+      after_bytes: before_bytes,
+      removed_files: 0,
+      removed_bytes: 0,
+    });
+  }
+
+  entries.sort_by(|left, right| {
+    left
+      .last_used
+      .cmp(&right.last_used)
+      .then_with(|| left.path.cmp(&right.path))
+  });
+
+  let mut after_bytes = before_bytes;
+  let mut removed_files = 0;
+  let mut removed_bytes = 0;
+  for entry in entries {
+    if after_bytes <= max_bytes {
+      break;
+    }
+    if std_fs::remove_file(&entry.path).is_ok() {
+      let _ = std_fs::remove_file(cache_used_path(&entry.path));
+      after_bytes = after_bytes.saturating_sub(entry.size_bytes);
+      removed_files += 1;
+      removed_bytes += entry.size_bytes;
+    }
+  }
+
+  Ok(CacheCleanupReport {
+    before_bytes,
+    after_bytes,
+    removed_files,
+    removed_bytes,
+  })
+}
+
 pub async fn clear_cache(cache_dir: &Path) -> Result<CacheCleanupReport> {
-  let targets = [cache_dir.join("pages"), cache_dir.join("render")];
+  let targets = [
+    cache_dir.join("pages"),
+    cache_dir.join("render"),
+    cache_dir.join("text"),
+    cache_dir.join("search-highlight"),
+  ];
   let mut before_bytes = 0;
   let mut before_files = 0;
   for target in &targets {
@@ -226,7 +281,11 @@ async fn collect_cache_entries_in(
 fn is_cache_payload(cache_dir: &Path, path: &Path) -> bool {
   match path.extension().and_then(|value| value.to_str()) {
     Some("ansi") => path.starts_with(cache_dir.join("render")),
-    Some("png") => path.starts_with(cache_dir.join("pages")),
+    Some("png") => {
+      path.starts_with(cache_dir.join("pages"))
+        || path.starts_with(cache_dir.join("search-highlight"))
+    }
+    Some("zst") => path.starts_with(cache_dir.join("text")),
     _ => false,
   }
 }
@@ -236,7 +295,7 @@ pub async fn touch_cache_entry(cache_path: &Path) {
 }
 
 pub fn touch_cache_entry_sync(cache_path: &Path) {
-  let _ = std::fs::write(cache_used_path(cache_path), []);
+  let _ = std_fs::write(cache_used_path(cache_path), []);
 }
 
 fn cache_used_path(cache_path: &Path) -> PathBuf {
@@ -252,6 +311,56 @@ fn cache_used_path(cache_path: &Path) -> PathBuf {
 
 async fn cache_last_used(cache_path: &Path, metadata: &std::fs::Metadata) -> SystemTime {
   if let Ok(used_metadata) = fs::metadata(cache_used_path(cache_path)).await
+    && let Ok(modified) = used_metadata.modified()
+  {
+    return modified;
+  }
+  metadata
+    .accessed()
+    .or_else(|_| metadata.modified())
+    .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+fn collect_cache_entries_in_sync(cache_dir: &Path, dir: &Path) -> Result<Vec<CacheEntry>> {
+  let mut entries = Vec::new();
+  let mut pending = vec![dir.to_path_buf()];
+  while let Some(dir) = pending.pop() {
+    let reader = match std_fs::read_dir(&dir) {
+      Ok(reader) => reader,
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+      Err(error) => {
+        return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+      }
+    };
+
+    for entry in reader {
+      let path = entry
+        .with_context(|| format!("failed to scan {}", dir.display()))?
+        .path();
+      let metadata = match std_fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(_) => continue,
+      };
+      if metadata.is_dir() {
+        pending.push(path);
+        continue;
+      }
+      if !metadata.is_file() || !is_cache_payload(cache_dir, &path) {
+        continue;
+      }
+      let last_used = cache_last_used_sync(&path, &metadata);
+      entries.push(CacheEntry {
+        path,
+        size_bytes: metadata.len(),
+        last_used,
+      });
+    }
+  }
+  Ok(entries)
+}
+
+fn cache_last_used_sync(cache_path: &Path, metadata: &std::fs::Metadata) -> SystemTime {
+  if let Ok(used_metadata) = std_fs::metadata(cache_used_path(cache_path))
     && let Ok(modified) = used_metadata.modified()
   {
     return modified;

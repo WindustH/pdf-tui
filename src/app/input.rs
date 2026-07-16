@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
-use crossterm::event::{Event, KeyEvent, MouseEventKind};
+use crossterm::event::{Event, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use framework_tui::{
   CommandCompletion, MatchResult, Prompt, PromptInputResult, current_word_start,
   filter_completion_candidates, handle_prompt_key as framework_handle_prompt_key,
   handle_prompt_paste as framework_handle_prompt_paste, key_event_to_token,
 };
+use ratatui::layout::{Constraint, Direction, Rect};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -61,6 +62,12 @@ impl App {
         self.handle_key_token(token, tx);
       }
       Event::Mouse(mouse) => match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Bookmarks => {
+          self.handle_bookmarks_mouse_click(mouse)
+        }
+        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Search => {
+          self.handle_search_mouse_click(mouse)
+        }
         MouseEventKind::ScrollDown if self.view == ViewMode::Metadata => {
           self.metadata_scroll_down()
         }
@@ -77,6 +84,86 @@ impl App {
       _ => {}
     }
     force_redraw || before != self.input_redraw_state()
+  }
+
+  fn handle_bookmarks_mouse_click(&mut self, mouse: MouseEvent) {
+    let Some(index) = self.bookmark_index_at(mouse.column, mouse.row) else {
+      return;
+    };
+    if self.bookmarks_selected == Some(index) {
+      self.bookmarks_toggle();
+    } else {
+      self.bookmarks_selected = Some(index);
+    }
+  }
+
+  fn handle_search_mouse_click(&mut self, mouse: MouseEvent) {
+    let Some(index) = self.search_result_index_at(mouse.column, mouse.row) else {
+      return;
+    };
+    if self.search_selected == Some(index) {
+      self.search_open();
+    } else {
+      self.search_selected = Some(index);
+    }
+  }
+
+  fn bookmark_index_at(&self, column: u16, row: u16) -> Option<usize> {
+    if self.bookmarks_error.is_some() || self.bookmarks.is_empty() {
+      return None;
+    }
+    let tree = self.left_panel_area(self.bookmarks_left_ratio, self.bookmarks_right_ratio)?;
+    let inner = bordered_inner(tree);
+    if !contains(inner, column, row) {
+      return None;
+    }
+    let row_offset = row.saturating_sub(inner.y) as usize;
+    self
+      .visible_bookmark_indices()
+      .get(self.bookmarks_scroll as usize + row_offset)
+      .copied()
+  }
+
+  fn search_result_index_at(&self, column: u16, row: u16) -> Option<usize> {
+    let query = self.search_prompt.buffer().input.trim();
+    if query.is_empty()
+      || self.search_index_loading
+      || self.search_index_error.is_some()
+      || self.search_results.is_empty()
+    {
+      return None;
+    }
+    let panel = self.left_panel_area(self.search_left_ratio, self.search_right_ratio)?;
+    let inner = bordered_inner(panel);
+    if inner.height <= 1 {
+      return None;
+    }
+    let results = Rect {
+      x: inner.x,
+      y: inner.y.saturating_add(1),
+      width: inner.width,
+      height: inner.height.saturating_sub(1),
+    };
+    if !contains(results, column, row) {
+      return None;
+    }
+    let row_offset = row.saturating_sub(results.y) as usize;
+    let index = self.search_scroll as usize + row_offset;
+    (index < self.search_results.len()).then_some(index)
+  }
+
+  fn left_panel_area(&self, left_ratio: u16, right_ratio: u16) -> Option<Rect> {
+    let area = self.viewport?;
+    let left_ratio = u32::from(left_ratio.max(1));
+    let right_ratio = u32::from(right_ratio.max(1));
+    let chunks = ratatui::layout::Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([
+        Constraint::Ratio(left_ratio, left_ratio.saturating_add(right_ratio)),
+        Constraint::Ratio(right_ratio, left_ratio.saturating_add(right_ratio)),
+      ])
+      .split(area);
+    chunks.first().copied()
   }
 
   fn input_redraw_state(&self) -> InputRedrawState {
@@ -537,14 +624,23 @@ impl App {
     self.search_index_loading = true;
     self.search_index_error = None;
     let path = self.document.path.clone();
+    let cache_dir = self.settings.cache_dir.clone();
     let pdftotext_bin = self.settings.config.render.pdftotext_bin.clone();
     let page_count = self.document.page_count;
     let source_size_bytes = self.document.size_bytes;
     let source_modified_nanos = self.document.modified_nanos;
     let tx = tx.clone();
     self.set_message("building search index...");
-    tokio::task::spawn_blocking(move || {
-      let result = search::build_search_index(&path, &pdftotext_bin, page_count);
+    tokio::spawn(async move {
+      let result = search::build_search_index(
+        &path,
+        &cache_dir,
+        &pdftotext_bin,
+        page_count,
+        source_size_bytes,
+        source_modified_nanos,
+      )
+      .await;
       let _ = tx.send(AsyncEvent::SearchIndex(SearchIndexOutcome {
         source_size_bytes,
         source_modified_nanos,
@@ -660,4 +756,20 @@ fn reload_document(
     metadata,
     bookmarks,
   })
+}
+
+fn bordered_inner(area: Rect) -> Rect {
+  Rect {
+    x: area.x.saturating_add(1),
+    y: area.y.saturating_add(1),
+    width: area.width.saturating_sub(2),
+    height: area.height.saturating_sub(2),
+  }
+}
+
+fn contains(area: Rect, column: u16, row: u16) -> bool {
+  column >= area.x
+    && column < area.x.saturating_add(area.width)
+    && row >= area.y
+    && row < area.y.saturating_add(area.height)
 }

@@ -2,6 +2,7 @@ mod cache_file;
 mod chafa;
 mod driver;
 mod key;
+mod memory;
 
 use std::{
   collections::{HashMap, HashSet},
@@ -9,7 +10,7 @@ use std::{
   sync::Arc,
 };
 
-use img_tui::{NativeImageConfig, RenderMode, native_image};
+use img_tui::{NativeImageConfig, RenderMode};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc};
 use tracing::debug;
@@ -22,20 +23,21 @@ use crate::{
 
 use driver::render_with_fallbacks;
 use key::{hash_native_config, hash_render_config, hash_render_kind};
+use memory::{PreparedImageMemoryCache, RenderedImageMemoryCache, memory_cache_bytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RenderKind {
   Fit,
 }
 
-type PreparedImageCache = Arc<Mutex<HashMap<String, native_image::PreparedNativeImage>>>;
+type PreparedImageCache = Arc<Mutex<PreparedImageMemoryCache>>;
 
 pub struct RenderStore {
   cache_dir: PathBuf,
   config: RenderConfig,
   native_config: NativeImageConfig,
   modes: Vec<RenderMode>,
-  memory: HashMap<String, RenderedImage>,
+  memory: RenderedImageMemoryCache,
   last_success: HashMap<String, String>,
   failures: HashMap<String, String>,
   in_flight: HashSet<String>,
@@ -61,18 +63,28 @@ impl RenderStore {
   ) -> Self {
     let max_concurrent = config.max_concurrent.max(1);
     let max_preloads = max_concurrent.saturating_sub(1);
+    let raw_memory_max_bytes = memory_cache_bytes(config.raw_memory_cache_max_bytes);
+    let compressed_memory_max_bytes = memory_cache_bytes(config.compressed_memory_cache_max_bytes);
+    let prepared_memory_max_bytes = memory_cache_bytes(config.prepared_memory_cache_max_bytes);
+    let memory_compression = config.memory_compression;
     Self {
       cache_dir,
       config,
       native_config,
       modes,
-      memory: HashMap::new(),
+      memory: RenderedImageMemoryCache::new(
+        raw_memory_max_bytes,
+        compressed_memory_max_bytes,
+        memory_compression,
+      ),
       last_success: HashMap::new(),
       failures: HashMap::new(),
       in_flight: HashSet::new(),
       in_flight_slots: HashMap::new(),
       visible_render_waits: HashSet::new(),
-      prepared_images: Arc::new(Mutex::new(HashMap::new())),
+      prepared_images: Arc::new(Mutex::new(PreparedImageMemoryCache::new(
+        prepared_memory_max_bytes,
+      ))),
       max_concurrent,
       semaphore: Arc::new(Semaphore::new(max_concurrent)),
       preload_semaphore: Arc::new(Semaphore::new(max_preloads)),
@@ -267,7 +279,7 @@ impl RenderStore {
     })
   }
 
-  pub fn get(&self, cache_key: &str) -> Option<&RenderedImage> {
+  pub fn get(&mut self, cache_key: &str) -> Option<&RenderedImage> {
     self.memory.get(cache_key)
   }
 
@@ -286,7 +298,9 @@ impl RenderStore {
     self.in_flight.clear();
     self.in_flight_slots.clear();
     self.visible_render_waits.clear();
-    self.prepared_images = Arc::new(Mutex::new(HashMap::new()));
+    self.prepared_images = Arc::new(Mutex::new(PreparedImageMemoryCache::new(
+      memory_cache_bytes(self.config.prepared_memory_cache_max_bytes),
+    )));
   }
 
   pub fn rendered_key(
@@ -304,11 +318,13 @@ impl RenderStore {
     self
       .last_success
       .get(slot_key)
-      .filter(|fallback_key| self.memory.contains_key(*fallback_key))
+      .filter(|fallback_key| self.memory.contains_key(fallback_key))
       .cloned()
   }
 
-  pub fn mark_drawn(&mut self, _cache_key: &str) {}
+  pub fn mark_drawn(&mut self, cache_key: &str) {
+    self.memory.touch(cache_key);
+  }
 
   pub fn take_protocol_writes(
     &mut self,
@@ -341,7 +357,8 @@ impl RenderStore {
         self
           .last_success
           .insert(outcome.slot_key, outcome.cache_key.clone());
-        self.memory.insert(outcome.cache_key, rendered);
+        let evicted = self.memory.insert(outcome.cache_key, rendered);
+        self.drop_evicted_render_keys(&evicted);
         RenderFinish {
           message: None,
           needs_draw: !outcome.preload || visible_wait,
@@ -409,6 +426,15 @@ impl RenderStore {
       hasher.update([0]);
     }
     hex::encode(hasher.finalize())
+  }
+
+  fn drop_evicted_render_keys(&mut self, evicted: &[String]) {
+    if evicted.is_empty() {
+      return;
+    }
+    self
+      .last_success
+      .retain(|_, cache_key| !evicted.iter().any(|evicted| evicted == cache_key));
   }
 }
 

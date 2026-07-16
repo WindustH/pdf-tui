@@ -41,6 +41,8 @@ pub fn draw(
     .split(area);
   let main = chunks[0];
   let footer = chunks[1];
+  let completion_overlay = footer::command_completion_overlay_area(app, main);
+  let obscured_areas = completion_overlay.iter().copied().collect::<Vec<_>>();
   let mut overlays = Vec::new();
   let mut cursor_position = None;
   let mut frame_message = None;
@@ -55,6 +57,7 @@ pub fn draw(
     renderer,
     tx,
     main,
+    &obscured_areas,
     &mut overlays,
     &mut frame_message,
     &mut preserve_overlays,
@@ -62,6 +65,9 @@ pub fn draw(
     &mut drawn_render_keys,
     &mut cursor_position,
   );
+  if let Some(area) = completion_overlay {
+    footer::draw_command_completion_overlay(frame, app, area);
+  }
   footer::draw_footer(
     frame,
     app,
@@ -124,6 +130,7 @@ fn draw_main(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
+  obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
   frame_message: &mut Option<String>,
   preserve_overlays: &mut bool,
@@ -159,6 +166,7 @@ fn draw_main(
       renderer,
       tx,
       area,
+      obscured_areas,
       overlays,
       frame_message,
       preserve_overlays,
@@ -176,6 +184,7 @@ fn draw_main(
       renderer,
       tx,
       area,
+      obscured_areas,
       overlays,
       frame_message,
       preserve_overlays,
@@ -194,6 +203,7 @@ fn draw_main(
       renderer,
       tx,
       area,
+      obscured_areas,
       overlays,
       frame_message,
       preserve_overlays,
@@ -208,6 +218,7 @@ fn draw_main(
       renderer,
       tx,
       area,
+      obscured_areas,
       overlays,
       frame_message,
       preserve_overlays,

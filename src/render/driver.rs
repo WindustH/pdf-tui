@@ -16,6 +16,7 @@ use super::{
   cache_file::{decode_cache_file, rewrite_cache_file, write_cache_file},
   chafa::run_chafa,
   key::{kitty_image_id, kitty_placement_id, render_cache_key, render_fingerprint},
+  memory::prepared_image_estimated_bytes,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -258,9 +259,11 @@ async fn prepared_native_image(
   cache: &PreparedImageCache,
 ) -> Result<native_image::PreparedNativeImage, String> {
   let key = prepared_cache_key(page, width, height, kind, native_config);
-  let mut cache = cache.lock().await;
-  if let Some(prepared) = cache.get(&key) {
-    return Ok(prepared.clone());
+  {
+    let mut cache = cache.lock().await;
+    if let Some(prepared) = cache.get(&key) {
+      return Ok(prepared);
+    }
   }
 
   let (prepared_width, prepared_height) = prepared_dimensions(kind, width, height);
@@ -272,7 +275,13 @@ async fn prepared_native_image(
   )
   .await
   .map_err(|error| error.to_string())?;
-  cache.insert(key, prepared.clone());
+  let bytes =
+    prepared_image_estimated_bytes(prepared_width, prepared_height, native_config.cell_pixels);
+  let mut cache = cache.lock().await;
+  if let Some(existing) = cache.get(&key) {
+    return Ok(existing);
+  }
+  cache.insert(key, prepared.clone(), bytes);
   Ok(prepared)
 }
 

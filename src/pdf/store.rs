@@ -162,12 +162,9 @@ impl PageStore {
       let result = match acquire_page_permits(semaphore, permits).await {
         Ok(permits) => {
           let _permits = permits;
-          tokio::task::spawn_blocking(move || {
-            render_page_slice_image(&document, spec).map_err(|error| error.to_string())
-          })
-          .await
-          .map_err(|error| format!("page slice worker failed: {error}"))
-          .and_then(|result| result)
+          render_page_slice_image(&document, spec)
+            .await
+            .map_err(|error| error.to_string())
         }
         Err(error) => Err(error),
       };
@@ -288,12 +285,9 @@ impl PageStore {
       let result = match acquire_page_permits(semaphore, permits).await {
         Ok(permits) => {
           let _permits = permits;
-          tokio::task::spawn_blocking(move || {
-            render_page_image(&document, key).map_err(|error| error.to_string())
-          })
-          .await
-          .map_err(|error| format!("page worker failed: {error}"))
-          .and_then(|result| result)
+          render_page_image(&document, key)
+            .await
+            .map_err(|error| error.to_string())
         }
         Err(error) => Err(error),
       };

@@ -1,5 +1,5 @@
 use std::{
-  fs,
+  env, fs,
   path::{Path, PathBuf},
   process::Command,
   time::UNIX_EPOCH,
@@ -19,7 +19,9 @@ pub struct PdfDocument {
   pub size_bytes: u64,
   pub modified_nanos: u128,
   pub page_cache_dir: PathBuf,
+  pub page_temp_dir: PathBuf,
   pub pdftoppm_bin: String,
+  pub pdftoppm_batch_pages: usize,
   pub dpi: u16,
   pub page_size: Option<(u32, u32)>,
 }
@@ -139,7 +141,9 @@ impl PdfDocument {
       size_bytes: metadata.len(),
       modified_nanos: modified_nanos(&metadata),
       page_cache_dir: cache_dir,
+      page_temp_dir: env::temp_dir().join("pdf-tui").join("pages"),
       pdftoppm_bin: render.pdftoppm_bin.clone(),
+      pdftoppm_batch_pages: render.pdftoppm_batch_pages.max(1),
       dpi: render.page_dpi,
       page_size: pdfinfo.page_size,
     })

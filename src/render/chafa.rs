@@ -1,6 +1,7 @@
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 use img_tui::RenderMode;
+use tokio::process::Command;
 
 use crate::config::RenderConfig;
 
@@ -15,9 +16,9 @@ pub(super) async fn run_chafa(
   command.arg(image_path);
 
   let chafa_bin = config.chafa_bin.clone();
-  let output = tokio::task::spawn_blocking(move || command.output())
+  let output = command
+    .output()
     .await
-    .map_err(|error| format!("chafa worker failed: {error}"))?
     .map_err(|error| format!("failed to run {chafa_bin}: {error}"))?;
   check_chafa_output(output, &config.chafa_bin)
 }

@@ -70,15 +70,21 @@ Render fields:
 
 - `pdfinfo_bin`: `pdfinfo` executable
 - `pdftoppm_bin`: `pdftoppm` executable
+- `pdftoppm_batch_pages`: maximum consecutive pages rendered by one `pdftoppm` process
 - `pdftk_bin`: `pdftk` executable, used for reading and writing PDF bookmarks
 - `pdftotext_bin`: `pdftotext` executable, used for embedded text search
 - `page_dpi`: base PDF rasterization DPI
 - `chafa_bin`: Chafa executable
 - `auto_detect`: detect terminal graphics support
 - `chafa_args`: extra Chafa fallback arguments
-- `cache_max_bytes`: render cache size limit
-- `cache_compression_level`: zstd compression level
-- `cache_compression_threads`: zstd compression threads
+- `raw_memory_cache_max_bytes`: L1 raw rendered terminal stream memory limit
+- `compressed_memory_cache_max_bytes`: L2 compressed rendered terminal stream memory limit
+- `prepared_memory_cache_max_bytes`: prepared native image memory limit
+- `search_highlight_cache_max_bytes`: search preview highlight PNG cache limit
+- `memory_compression`: keep cold rendered terminal streams compressed in memory
+- `cache_max_bytes`: L3 disk cache size limit for page PNGs, text indexes, and terminal streams
+- `cache_compression_level`: L3 zstd compression level
+- `cache_compression_threads`: L3 zstd compression threads
 - `max_concurrent`: maximum concurrent page/render tasks
 - `chafa_threads`: Chafa threads per process
 - `preload_ahead`, `preload_behind`: preload window around the visible region

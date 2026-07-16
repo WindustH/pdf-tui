@@ -1,14 +1,16 @@
-use std::{fs, path::Path, process::Command, time::UNIX_EPOCH};
+use std::{fs, io::Cursor, path::Path, time::UNIX_EPOCH};
 
 use image::GenericImageView;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::{fs as async_fs, process::Command};
 use unicode_width::UnicodeWidthStr;
 
-use crate::pdf::PageImage;
+use crate::{cache, pdf::PageImage};
 
 const MAX_SEARCH_RESULTS: usize = 2000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfSearchIndex {
   lines: Vec<SearchLine>,
 }
@@ -25,7 +27,7 @@ pub struct PdfSearchMatch {
   pub rect: SearchRect,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SearchRect {
   pub x_min: f64,
   pub y_min: f64,
@@ -33,7 +35,7 @@ pub struct SearchRect {
   pub y_max: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchLine {
   page_index: usize,
   page_width: f64,
@@ -45,13 +47,13 @@ struct SearchLine {
   search_spans: Vec<TextSpan>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchWord {
   text: String,
   rect: SearchRect,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct TextSpan {
   word_index: usize,
   start: usize,
@@ -66,16 +68,43 @@ struct LineKey {
   line: usize,
 }
 
-pub fn build_search_index(
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedSearchIndex {
+  version: u8,
+  source_path: String,
+  source_size_bytes: u64,
+  source_modified_nanos: String,
+  pdftotext_bin: String,
+  page_count: usize,
+  index: PdfSearchIndex,
+}
+
+pub async fn build_search_index(
   path: &Path,
+  cache_dir: &Path,
   pdftotext_bin: &str,
   page_count: usize,
+  source_size_bytes: u64,
+  source_modified_nanos: u128,
 ) -> Result<PdfSearchIndex, String> {
+  let cache_path = search_index_cache_path(
+    cache_dir,
+    path,
+    pdftotext_bin,
+    page_count,
+    source_size_bytes,
+    source_modified_nanos,
+  );
+  if let Ok(index) = read_cached_search_index(&cache_path).await {
+    return Ok(index);
+  }
+
   let output = Command::new(pdftotext_bin)
     .arg("-tsv")
     .arg(path)
     .arg("-")
     .output()
+    .await
     .map_err(|err| format!("failed to run {pdftotext_bin}; install poppler-utils: {err}"))?;
   if !output.status.success() {
     return Err(format!(
@@ -86,7 +115,21 @@ pub fn build_search_index(
   }
   let body = String::from_utf8(output.stdout)
     .map_err(|err| format!("pdftotext output is not UTF-8: {err}"))?;
-  parse_tsv_index(&body, page_count)
+  let index = parse_tsv_index(&body, page_count)?;
+  let _ = write_cached_search_index(
+    &cache_path,
+    CachedSearchIndex {
+      version: 1,
+      source_path: path.to_string_lossy().into_owned(),
+      source_size_bytes,
+      source_modified_nanos: source_modified_nanos.to_string(),
+      pdftotext_bin: pdftotext_bin.to_string(),
+      page_count,
+      index: index.clone(),
+    },
+  )
+  .await;
+  Ok(index)
 }
 
 impl PdfSearchIndex {
@@ -160,6 +203,7 @@ pub fn highlighted_page_image(
   cache_dir: &Path,
   page: &PageImage,
   search_match: &PdfSearchMatch,
+  max_bytes: u64,
 ) -> Result<PageImage, String> {
   let dir = cache_dir.join("search-highlight");
   fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -167,7 +211,9 @@ pub fn highlighted_page_image(
   let path = dir.join(format!("{cache_key}.png"));
   if !path.exists() {
     write_highlighted_page(&path, page, search_match)?;
+    let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
+  cache::touch_cache_entry_sync(&path);
   let metadata = fs::metadata(&path).map_err(|err| err.to_string())?;
   Ok(PageImage {
     page_index: page.page_index,
@@ -242,6 +288,73 @@ fn parse_tsv_index(body: &str, page_count: usize) -> Result<PdfSearchIndex, Stri
   }
   flush_line(&mut lines, current_key, &mut current_words, &page_sizes);
   Ok(PdfSearchIndex { lines })
+}
+
+fn search_index_cache_path(
+  cache_dir: &Path,
+  path: &Path,
+  pdftotext_bin: &str,
+  page_count: usize,
+  source_size_bytes: u64,
+  source_modified_nanos: u128,
+) -> std::path::PathBuf {
+  let mut hasher = Sha256::new();
+  hasher.update(b"pdf-tui-search-index-v1");
+  hasher.update(path.to_string_lossy().as_bytes());
+  hasher.update(source_size_bytes.to_le_bytes());
+  hasher.update(source_modified_nanos.to_le_bytes());
+  hasher.update(page_count.to_le_bytes());
+  hasher.update(pdftotext_bin.as_bytes());
+  cache_dir
+    .join("text")
+    .join(format!("{}.toml.zst", hex::encode(hasher.finalize())))
+}
+
+async fn read_cached_search_index(path: &Path) -> Result<PdfSearchIndex, String> {
+  let bytes = async_fs::read(path)
+    .await
+    .map_err(|error| format!("failed to read search cache {}: {error}", path.display()))?;
+  let decoded = tokio::task::spawn_blocking(move || zstd::stream::decode_all(Cursor::new(bytes)))
+    .await
+    .map_err(|error| format!("search cache decode worker failed: {error}"))?
+    .map_err(|error| format!("failed to decode search cache {}: {error}", path.display()))?;
+  let decoded = String::from_utf8(decoded)
+    .map_err(|error| format!("search cache {} is not UTF-8: {error}", path.display()))?;
+  let cached: CachedSearchIndex = toml::from_str(&decoded)
+    .map_err(|error| format!("failed to parse search cache {}: {error}", path.display()))?;
+  if cached.version != 1 {
+    return Err(format!(
+      "unsupported search cache version {}",
+      cached.version
+    ));
+  }
+  cache::touch_cache_entry(path).await;
+  Ok(cached.index)
+}
+
+async fn write_cached_search_index(path: &Path, cached: CachedSearchIndex) -> Result<(), String> {
+  if let Some(parent) = path.parent() {
+    async_fs::create_dir_all(parent)
+      .await
+      .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+  }
+  let encoded = toml::to_string(&cached)
+    .map_err(|error| format!("failed to encode search cache {}: {error}", path.display()))?;
+  let compressed =
+    tokio::task::spawn_blocking(move || zstd::stream::encode_all(Cursor::new(encoded), 3))
+      .await
+      .map_err(|error| format!("search cache compression worker failed: {error}"))?
+      .map_err(|error| {
+        format!(
+          "failed to compress search cache {}: {error}",
+          path.display()
+        )
+      })?;
+  async_fs::write(path, compressed)
+    .await
+    .map_err(|error| format!("failed to write search cache {}: {error}", path.display()))?;
+  cache::touch_cache_entry(path).await;
+  Ok(())
 }
 
 fn flush_line(

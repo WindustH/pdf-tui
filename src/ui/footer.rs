@@ -16,21 +16,30 @@ use crate::app::{App, ViewMode};
 pub(super) fn footer_height(app: &App, width: u16) -> u16 {
   let status = 1_u16;
   let prompt = u16::from(app.prompt.is_some());
-  let completion = if app.prompt.is_some() {
-    completion_rows(app.command_completion(), 5)
-  } else {
-    0
-  };
   let hints = app.key_hints();
   let which = if hints.is_empty() {
     0
   } else {
     key_hint_rows(hints.len(), which_key_columns(app, width))
   };
-  status
-    .saturating_add(prompt)
-    .saturating_add(completion)
-    .saturating_add(which)
+  status.saturating_add(prompt).saturating_add(which)
+}
+
+pub(super) fn command_completion_overlay_area(app: &App, area: Rect) -> Option<Rect> {
+  let height = command_completion_rows(app).min(area.height);
+  if height == 0 || area.width == 0 {
+    return None;
+  }
+  Some(Rect::new(
+    area.x,
+    area.y.saturating_add(area.height.saturating_sub(height)),
+    area.width,
+    height,
+  ))
+}
+
+pub(super) fn draw_command_completion_overlay(frame: &mut Frame, app: &App, area: Rect) {
+  draw_command_completion(frame, app, area);
 }
 
 pub(super) fn draw_footer(
@@ -66,14 +75,6 @@ pub(super) fn draw_footer(
     content_bottom = content_bottom.saturating_sub(1);
     let prompt_area = Rect::new(area.x, content_bottom, area.width, 1);
     draw_prompt(frame, app, prompt, prompt_area, cursor_position);
-  }
-
-  let completion_rows = command_completion_rows(app);
-  if completion_rows > 0 && content_bottom > area.y {
-    let height = completion_rows.min(content_bottom - area.y);
-    content_bottom = content_bottom.saturating_sub(height);
-    let completion_area = Rect::new(area.x, content_bottom, area.width, height);
-    draw_command_completion(frame, app, completion_area);
   }
 
   if !app.key_hints().is_empty() && area.y < content_bottom {
