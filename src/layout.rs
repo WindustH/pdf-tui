@@ -30,6 +30,12 @@ pub struct ScrollLayout {
   pub total_height: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ScrollWidthScore {
+  average: f64,
+  minimum: f64,
+}
+
 pub fn compute_scroll_layout(
   count: usize,
   viewport_width: u16,
@@ -40,8 +46,40 @@ pub fn compute_scroll_layout(
 ) -> ScrollLayout {
   let columns = config.columns.max(1) as usize;
   let gap_x = config.gap_x;
+  let max_page_width = fit_slot(viewport_width, columns, gap_x).max(1);
+  let dimensions = (0..count).map(dimensions).collect::<Vec<_>>();
+  let page_width = optimal_scroll_page_width(
+    count,
+    viewport_width,
+    viewport_height,
+    max_page_width,
+    config,
+    &dimensions,
+    cell_pixels,
+  );
+  build_scroll_layout(
+    count,
+    viewport_width,
+    viewport_height,
+    page_width,
+    config,
+    &dimensions,
+    cell_pixels,
+  )
+}
+
+fn build_scroll_layout(
+  count: usize,
+  viewport_width: u16,
+  viewport_height: u16,
+  page_width: u16,
+  config: &EffectiveLayoutConfig,
+  dimensions: &[Option<(u32, u32)>],
+  cell_pixels: Option<(u16, u16)>,
+) -> ScrollLayout {
+  let columns = config.columns.max(1) as usize;
+  let gap_x = config.gap_x;
   let gap_y = config.gap_y;
-  let page_width = fit_slot(viewport_width, columns, gap_x).max(1);
   let x_offset = centered_offset(viewport_width, columns, page_width, gap_x);
   let mut items = Vec::new();
   let mut rows = Vec::new();
@@ -50,7 +88,14 @@ pub fn compute_scroll_layout(
   for row_start in (0..count).step_by(columns) {
     let page_end = (row_start + columns).min(count);
     let page_heights = (row_start..page_end)
-      .map(|index| page_height_cells(page_width, dimensions(index), cell_pixels).max(1))
+      .map(|index| {
+        page_height_cells(
+          page_width,
+          dimensions.get(index).copied().flatten(),
+          cell_pixels,
+        )
+        .max(1)
+      })
       .collect::<Vec<_>>();
     let slice_height_limit = slice_height_limit(viewport_height, config.scroll_divisor);
     let slice_counts = page_heights
@@ -119,11 +164,116 @@ pub fn compute_scroll_layout(
   }
 }
 
+fn optimal_scroll_page_width(
+  count: usize,
+  viewport_width: u16,
+  viewport_height: u16,
+  max_page_width: u16,
+  config: &EffectiveLayoutConfig,
+  dimensions: &[Option<(u32, u32)>],
+  cell_pixels: Option<(u16, u16)>,
+) -> u16 {
+  if count == 0 || viewport_width == 0 || viewport_height == 0 {
+    return max_page_width.max(1);
+  }
+
+  let mut best_width = max_page_width.max(1);
+  let mut best_score = ScrollWidthScore {
+    average: f64::NEG_INFINITY,
+    minimum: f64::NEG_INFINITY,
+  };
+  for page_width in 1..=max_page_width.max(1) {
+    let layout = build_scroll_layout(
+      count,
+      viewport_width,
+      viewport_height,
+      page_width,
+      config,
+      dimensions,
+      cell_pixels,
+    );
+    let score = scroll_width_score(
+      &layout,
+      viewport_width,
+      viewport_height,
+      config.scroll_divisor,
+    );
+    if better_scroll_width(score, page_width, best_score, best_width) {
+      best_width = page_width;
+      best_score = score;
+    }
+  }
+  best_width
+}
+
+fn better_scroll_width(
+  score: ScrollWidthScore,
+  width: u16,
+  best_score: ScrollWidthScore,
+  best_width: u16,
+) -> bool {
+  const EPSILON: f64 = 0.000_001;
+  score.average > best_score.average + EPSILON
+    || ((score.average - best_score.average).abs() <= EPSILON
+      && (score.minimum > best_score.minimum + EPSILON
+        || ((score.minimum - best_score.minimum).abs() <= EPSILON && width > best_width)))
+}
+
+fn scroll_width_score(
+  layout: &ScrollLayout,
+  viewport_width: u16,
+  viewport_height: u16,
+  scroll_divisor: u16,
+) -> ScrollWidthScore {
+  if layout.rows.is_empty() || viewport_width == 0 || viewport_height == 0 {
+    return ScrollWidthScore {
+      average: 0.0,
+      minimum: 0.0,
+    };
+  }
+  let max_row = max_scroll_row_for_viewport(layout, viewport_height, scroll_divisor);
+  let denominator = f64::from(viewport_width.max(1)) * f64::from(viewport_height.max(1));
+  let mut total = 0.0;
+  let mut minimum = f64::INFINITY;
+  let mut count = 0_usize;
+  for start_row in 0..=max_row {
+    let rows = visible_scroll_rows(layout, start_row, viewport_height, scroll_divisor);
+    let area = visible_content_area(layout, &rows);
+    let score = area / denominator;
+    total += score;
+    minimum = minimum.min(score);
+    count += 1;
+  }
+  ScrollWidthScore {
+    average: if count == 0 {
+      0.0
+    } else {
+      total / count as f64
+    },
+    minimum: if minimum.is_finite() { minimum } else { 0.0 },
+  }
+}
+
+fn visible_content_area(layout: &ScrollLayout, rows: &[usize]) -> f64 {
+  let mut area = 0.0;
+  for row_index in rows {
+    let Some(row) = layout.rows.get(*row_index) else {
+      continue;
+    };
+    for item_index in &row.items {
+      let Some(item) = layout.items.get(*item_index) else {
+        continue;
+      };
+      area += f64::from(item.width.max(1)) * f64::from(item.height.max(1));
+    }
+  }
+  area
+}
+
 pub fn slice_height_limit(viewport_height: u16, scroll_divisor: u16) -> u16 {
   let divisor = scroll_divisor.max(1);
   viewport_height
     .max(1)
-    .saturating_add(divisor.saturating_sub(1))
     .checked_div(divisor)
     .unwrap_or(1)
     .max(1)
