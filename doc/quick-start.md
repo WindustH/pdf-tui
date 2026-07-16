@@ -68,4 +68,5 @@ Basic workflow:
 5. Press `r` or run `:refresh` after regenerating the PDF.
 6. Press `m` to inspect metadata, then `e` to edit supported PDF metadata.
 7. Press `b` to inspect bookmarks, then `e` to edit PDF bookmarks.
-8. Press `q` to quit.
+8. Press `s` to search embedded PDF text.
+9. Press `q` to quit.

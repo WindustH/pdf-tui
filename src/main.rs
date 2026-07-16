@@ -8,6 +8,7 @@ mod logging;
 mod metadata;
 mod pdf;
 mod render;
+mod search;
 mod terminal;
 mod ui;
 
@@ -406,6 +407,22 @@ fn handle_async_event(
         true
       }
     },
+    AsyncEvent::SearchIndex(outcome) => {
+      if outcome.source_size_bytes != app.document.size_bytes
+        || outcome.source_modified_nanos != app.document.modified_nanos
+      {
+        debug!(
+          source_size_bytes = outcome.source_size_bytes,
+          current_size_bytes = app.document.size_bytes,
+          source_modified_nanos = outcome.source_modified_nanos,
+          current_modified_nanos = app.document.modified_nanos,
+          "ignored stale search index"
+        );
+        return false;
+      }
+      app.finish_search_index(outcome.result);
+      true
+    }
     AsyncEvent::CacheClear(outcome) => match outcome.result {
       Ok(report) => {
         app.clear_cached_images();

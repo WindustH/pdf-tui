@@ -71,6 +71,7 @@ Render fields:
 - `pdfinfo_bin`: `pdfinfo` executable
 - `pdftoppm_bin`: `pdftoppm` executable
 - `pdftk_bin`: `pdftk` executable, used for reading and writing PDF bookmarks
+- `pdftotext_bin`: `pdftotext` executable, used for embedded text search
 - `page_dpi`: base PDF rasterization DPI
 - `chafa_bin`: Chafa executable
 - `auto_detect`: detect terminal graphics support
@@ -97,9 +98,11 @@ Behavior fields:
 - `auto_refresh_min_interval_ms`: minimum interval between automatic refresh requests
 - `bookmarks_left_ratio`: left bookmarks panel ratio
 - `bookmarks_right_ratio`: right preview panel ratio
+- `search_left_ratio`: left search panel ratio
+- `search_right_ratio`: right preview panel ratio
 
 Automatic refresh is disabled by default. When enabled, `pdf-tui` watches the
 opened PDF file signature and requests a refresh after updates. Repeated updates
 are rate limited by `auto_refresh_min_interval_ms`.
 
-The default bookmarks panel ratio is `2:1`.
+The default bookmarks and search panel ratio is `2:1`.

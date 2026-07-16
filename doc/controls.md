@@ -20,6 +20,7 @@ is open.
 - `r`: refresh the current PDF from disk
 - `m`: open PDF metadata
 - `b`: open PDF bookmarks
+- `s`: search embedded PDF text
 - `L s`: switch to the default scroll layout
 - `L g`: switch to the default grid layout
 - `:`: open command prompt
@@ -53,6 +54,18 @@ is open.
 - `l`, `right`: widen the bookmark tree panel
 - `ctrl-c`: quit
 - `:`: open command prompt
+
+## Search
+
+- type in the top search box to search embedded PDF text
+- `esc`: return to the viewer
+- `f1`: show search key bindings
+- `tab`, `down`: move to the next search result
+- `shift-tab`, `up`: move to the previous search result
+- `pgdn`: move down by one result viewport
+- `pgup`: move up by one result viewport
+- `enter`: jump to the selected result
+- `ctrl-c`: quit
 
 ## Command Prompt
 

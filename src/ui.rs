@@ -6,6 +6,7 @@ mod modal;
 mod page;
 mod preload;
 mod scroll;
+mod search_view;
 
 use img_tui::ProtocolOverlay;
 use ratatui::{
@@ -59,6 +60,7 @@ pub fn draw(
     &mut preserve_overlays,
     &mut preserve_areas,
     &mut drawn_render_keys,
+    &mut cursor_position,
   );
   footer::draw_footer(
     frame,
@@ -127,6 +129,7 @@ fn draw_main(
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
   drawn_render_keys: &mut Vec<String>,
+  cursor_position: &mut Option<(u16, u16)>,
 ) {
   let theme = &app.settings.theme;
   frame.render_widget(
@@ -161,6 +164,24 @@ fn draw_main(
       preserve_overlays,
       preserve_areas,
       drawn_render_keys,
+    );
+    return;
+  }
+
+  if app.view == ViewMode::Search {
+    search_view::draw_search(
+      frame,
+      app,
+      pages,
+      renderer,
+      tx,
+      area,
+      overlays,
+      frame_message,
+      preserve_overlays,
+      preserve_areas,
+      drawn_render_keys,
+      cursor_position,
     );
     return;
   }

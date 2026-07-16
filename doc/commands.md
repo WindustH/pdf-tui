@@ -62,14 +62,23 @@ The bookmarks view shows the PDF outline as a collapsible tree and previews the
 currently hovered target page. From that view, `edit_bookmarks` opens the
 editable bookmark draft in `$EDITOR`. The default key for that action is `e`.
 
+## `:search`
+
+Open the embedded text search view.
+
+Search uses `pdftotext -tsv`, so it only finds text already embedded in the PDF.
+It does not run OCR. The right preview highlights the selected match by
+rendering an inverted rectangle over the matched text area.
+
 ## `:help`
 
 Show key bindings for the current interface.
 
 `F1` opens the same contextual help popup. In the viewer it shows viewer plus
 global bindings, in the metadata view it shows metadata plus global bindings,
-in the bookmarks view it shows bookmark plus global bindings, and while the
-command prompt is active it shows input bindings.
+in the bookmarks view it shows bookmark plus global bindings, in the search
+view it shows search bindings, and while the command prompt is active it shows
+input bindings.
 
 ## `:write-config`
 

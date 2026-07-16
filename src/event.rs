@@ -8,6 +8,7 @@ use crate::{
   metadata::PdfMetadataEntry,
   pdf::PdfDocument,
   pdf::{PageImage, PageSliceSpec},
+  search::PdfSearchIndex,
 };
 
 #[derive(Debug)]
@@ -20,6 +21,7 @@ pub enum AsyncEvent {
   Refresh(DocumentReloadOutcome),
   MetadataWrite(MetadataWriteOutcome),
   BookmarksWrite(BookmarksWriteOutcome),
+  SearchIndex(SearchIndexOutcome),
 }
 
 #[derive(Debug)]
@@ -44,6 +46,13 @@ pub struct MetadataWriteOutcome {
 pub struct BookmarksWriteOutcome {
   pub result: Result<DocumentReload, String>,
   pub changed_bookmarks: usize,
+}
+
+#[derive(Debug)]
+pub struct SearchIndexOutcome {
+  pub source_size_bytes: u64,
+  pub source_modified_nanos: u128,
+  pub result: Result<PdfSearchIndex, String>,
 }
 
 #[derive(Debug)]

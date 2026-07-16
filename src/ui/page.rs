@@ -231,7 +231,7 @@ fn draw_page_pending(
   draw_centered(frame, area, text);
 }
 
-fn draw_rendered_page(
+pub(super) fn draw_rendered_page(
   frame: &mut Frame,
   area: Rect,
   rendered: &RenderedImage,
@@ -310,7 +310,7 @@ pub(super) fn page_target_pixels(
   (target_width, target_height)
 }
 
-fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {
+pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {
   frame.render_widget(
     Paragraph::new(text.into())
       .alignment(Alignment::Center)

@@ -9,6 +9,7 @@ pub struct KeymapConfig {
   pub viewer: KeymapSection,
   pub metadata: KeymapSection,
   pub bookmarks: KeymapSection,
+  pub search: KeymapSection,
   #[serde(default = "default_input_keymap_section")]
   pub input: KeymapSection,
   pub global: KeymapSection,
@@ -60,6 +61,7 @@ impl Default for KeymapConfig {
           key("r", "refresh", "Refresh current PDF"),
           key("m", "metadata", "Show PDF metadata"),
           key("b", "bookmarks", "Show PDF bookmarks"),
+          key("s", "search", "Search PDF text"),
           key(
             ["L", "s"],
             "layout scroll 1 3",
@@ -123,6 +125,37 @@ impl Default for KeymapConfig {
           key("right", "bookmarks_panel_wider", "Widen bookmark panel"),
         ],
       },
+      search: KeymapSection {
+        keymap: vec![
+          key("esc", "back", "Return to viewer"),
+          key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("f1", "help", "Show search key bindings"),
+          key("tab", "search_next", "Move to next search result"),
+          key("down", "search_next", "Move to next search result"),
+          key(
+            "backtab",
+            "search_previous",
+            "Move to previous search result",
+          ),
+          key("up", "search_previous", "Move to previous search result"),
+          key(
+            "pgdn",
+            "search_page_down",
+            "Move down one page of search results",
+          ),
+          key(
+            "pagedown",
+            "search_page_down",
+            "Move down one page of search results",
+          ),
+          key(
+            "pgup",
+            "search_page_up",
+            "Move up one page of search results",
+          ),
+          key("enter", "search_open", "Jump to search result"),
+        ],
+      },
       input: default_input_keymap_section(),
       global: KeymapSection {
         keymap: vec![key(":", "command", "Enter command")],
@@ -150,11 +183,21 @@ impl KeymapConfig {
     )
   }
 
+  pub fn search_bindings(&self) -> KeyBindings {
+    KeyBindings::from_sections(
+      binding_configs(&self.search.keymap),
+      Vec::<KeyBindingConfig>::new(),
+      binding_configs(&self.input.keymap),
+      Vec::<KeyBindingConfig>::new(),
+    )
+  }
+
   pub(super) fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
     append_missing_actions(&mut self.viewer.keymap, &default.viewer.keymap);
     append_missing_actions(&mut self.metadata.keymap, &default.metadata.keymap);
     append_missing_actions(&mut self.bookmarks.keymap, &default.bookmarks.keymap);
+    append_missing_actions(&mut self.search.keymap, &default.search.keymap);
     append_missing_actions(&mut self.input.keymap, &default.input.keymap);
     append_missing_actions(&mut self.global.keymap, &default.global.keymap);
   }
@@ -165,6 +208,7 @@ pub(super) fn format_keymap_toml(config: &KeymapConfig) -> String {
   push_keymap_section(&mut out, "viewer", &config.viewer);
   push_keymap_section(&mut out, "metadata", &config.metadata);
   push_keymap_section(&mut out, "bookmarks", &config.bookmarks);
+  push_keymap_section(&mut out, "search", &config.search);
   push_keymap_section(&mut out, "input", &config.input);
   push_keymap_section(&mut out, "global", &config.global);
   out

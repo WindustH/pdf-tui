@@ -181,6 +181,7 @@ fn status_view_label(app: &App) -> String {
     ViewMode::Viewer => app.layout.label(),
     ViewMode::Metadata => "metadata".to_string(),
     ViewMode::Bookmarks => "bookmarks".to_string(),
+    ViewMode::Search => "search".to_string(),
   }
 }
 

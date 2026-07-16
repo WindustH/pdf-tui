@@ -12,10 +12,11 @@ use crate::{
   bookmarks, cache, config,
   event::{
     AsyncEvent, BookmarksWriteOutcome, CacheClearOutcome, DocumentReload, DocumentReloadOutcome,
-    MetadataWriteOutcome,
+    MetadataWriteOutcome, SearchIndexOutcome,
   },
   metadata,
   pdf::PdfDocument,
+  search,
 };
 
 use super::{
@@ -32,6 +33,7 @@ const COMMAND_NAMES: &[&str] = &[
   "metadata",
   "quit",
   "refresh",
+  "search",
   "write-config",
 ];
 
@@ -50,6 +52,8 @@ impl App {
     match input {
       Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
       Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
+      Event::Key(key) if self.view == ViewMode::Search => self.handle_search_key(key, tx),
+      Event::Paste(value) if self.view == ViewMode::Search => self.handle_search_paste(&value),
       Event::Key(key) => {
         let Some(token) = key_event_to_token(key) else {
           return false;
@@ -63,6 +67,8 @@ impl App {
         MouseEventKind::ScrollUp if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
         MouseEventKind::ScrollDown if self.view == ViewMode::Bookmarks => self.bookmarks_next(),
         MouseEventKind::ScrollUp if self.view == ViewMode::Bookmarks => self.bookmarks_previous(),
+        MouseEventKind::ScrollDown if self.view == ViewMode::Search => self.search_next(),
+        MouseEventKind::ScrollUp if self.view == ViewMode::Search => self.search_previous(),
         MouseEventKind::ScrollDown => self.scroll_down(),
         MouseEventKind::ScrollUp => self.scroll_up(),
         _ => {}
@@ -96,6 +102,13 @@ impl App {
       bookmarks_expanded_len: self.bookmarks_expanded.len(),
       bookmarks_left_ratio: self.bookmarks_left_ratio,
       bookmarks_right_ratio: self.bookmarks_right_ratio,
+      search_input: self.search_prompt.buffer().input.clone(),
+      search_cursor: self.search_prompt.buffer().cursor,
+      search_results_len: self.search_results.len(),
+      search_selected: self.search_selected,
+      search_scroll: self.search_scroll,
+      search_index_loading: self.search_index_loading,
+      search_index_error: self.search_index_error.clone(),
       confirm: self.confirm.is_some(),
       key_help: self.key_help,
       editor_request: self.editor_request.is_some(),
@@ -113,6 +126,10 @@ impl App {
       self
         .key_dispatcher
         .dispatch(&self.bookmarks_keymap, self.key_context(), token)
+    } else if self.view == ViewMode::Search {
+      self
+        .key_dispatcher
+        .dispatch(&self.search_keymap, self.key_context(), token)
     } else {
       self
         .key_dispatcher
@@ -155,6 +172,7 @@ impl App {
       "refresh" => self.request_refresh(tx),
       "metadata" => self.enter_metadata_view(),
       "bookmarks" => self.enter_bookmarks_view(),
+      "search" => self.enter_search_view(tx),
       "edit_metadata" => self.start_metadata_edit(),
       "edit_bookmarks" => self.start_bookmarks_edit(),
       "metadata_scroll_down" => self.metadata_scroll_down(),
@@ -170,7 +188,63 @@ impl App {
       "bookmarks_open" => self.bookmarks_open(),
       "bookmarks_panel_narrower" => self.bookmarks_panel_narrower(),
       "bookmarks_panel_wider" => self.bookmarks_panel_wider(),
+      "search_next" => self.search_next(),
+      "search_previous" => self.search_previous(),
+      "search_page_down" => self.search_page_down(),
+      "search_page_up" => self.search_page_up(),
+      "search_open" => self.search_open(),
       other => self.set_message(format!("unknown action: {other}")),
+    }
+  }
+
+  fn handle_search_key(&mut self, key: KeyEvent, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if let Some(token) = key_event_to_token(key) {
+      match self
+        .key_dispatcher
+        .dispatch(&self.search_keymap, self.key_context(), token)
+      {
+        MatchResult::Action(action) => {
+          self.handle_action(&action, tx);
+          return;
+        }
+        MatchResult::Prefix(_) => return,
+        MatchResult::None => {}
+      }
+    }
+
+    let before = self.search_prompt.buffer().input.clone();
+    let result = framework_handle_prompt_key(
+      &mut self.search_prompt,
+      &mut self.search_command_state,
+      &self.keymap,
+      key,
+    );
+    match result {
+      PromptInputResult::Changed => {
+        if self.search_prompt.buffer().input != before {
+          self.refresh_search_results();
+        }
+      }
+      PromptInputResult::UnknownAction(action) if action == "help" => self.show_key_help(),
+      PromptInputResult::UnknownAction(action) => {
+        self.set_message(format!("unknown search input action: {action}"));
+      }
+      PromptInputResult::Cancel => self.back_to_viewer(),
+      PromptInputResult::Submit
+      | PromptInputResult::Unhandled
+      | PromptInputResult::EditInEditor { .. } => {}
+    }
+  }
+
+  fn handle_search_paste(&mut self, value: &str) {
+    let before = self.search_prompt.buffer().input.clone();
+    let result = framework_handle_prompt_paste(
+      &mut self.search_prompt,
+      &mut self.search_command_state,
+      value,
+    );
+    if result == PromptInputResult::Changed && self.search_prompt.buffer().input != before {
+      self.refresh_search_results();
     }
   }
 
@@ -419,6 +493,7 @@ impl App {
       }
       "metadata" => self.enter_metadata_view(),
       "bookmarks" => self.enter_bookmarks_view(),
+      "search" => self.enter_search_view(tx),
       "refresh" => self.request_refresh(tx),
       "help" => self.show_key_help(),
       other => self.set_message(format!("unknown command: {other}")),
@@ -452,6 +527,29 @@ impl App {
     tokio::task::spawn_blocking(move || {
       let result = reload_document(path, cache_dir, render);
       let _ = tx.send(AsyncEvent::Refresh(DocumentReloadOutcome { result }));
+    });
+  }
+
+  pub fn request_search_index(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if self.search_index.is_some() || self.search_index_loading {
+      return;
+    }
+    self.search_index_loading = true;
+    self.search_index_error = None;
+    let path = self.document.path.clone();
+    let pdftotext_bin = self.settings.config.render.pdftotext_bin.clone();
+    let page_count = self.document.page_count;
+    let source_size_bytes = self.document.size_bytes;
+    let source_modified_nanos = self.document.modified_nanos;
+    let tx = tx.clone();
+    self.set_message("building search index...");
+    tokio::task::spawn_blocking(move || {
+      let result = search::build_search_index(&path, &pdftotext_bin, page_count);
+      let _ = tx.send(AsyncEvent::SearchIndex(SearchIndexOutcome {
+        source_size_bytes,
+        source_modified_nanos,
+        result,
+      }));
     });
   }
 

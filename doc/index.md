@@ -6,7 +6,7 @@ This directory contains user, configuration, and implementation notes for
 ## Start Here
 
 - [Quick Start](quick-start.md): build, run, and open a PDF.
-- [Controls](controls.md): default browsing, metadata, bookmark, prompt, mouse, and which-key controls.
+- [Controls](controls.md): default browsing, metadata, bookmark, search, prompt, mouse, and which-key controls.
 - [Commands](commands.md): command prompt commands such as `:layout`, `:layout-use`, and `:clear-cache`.
 
 ## Configuration
@@ -17,7 +17,7 @@ This directory contains user, configuration, and implementation notes for
 
 ## Features
 
-- [Views](views.md): scroll, grid, metadata, and bookmark view behavior.
+- [Views](views.md): scroll, grid, metadata, bookmark, and search view behavior.
 - [Rendering](rendering.md): PDF rasterization, terminal image rendering, preloading, and caching.
 - [Terminal Graphics](terminal-graphics.md): Kitty, Sixel, iTerm2, Chafa symbols, and ASCII fallback.
 - [Cache And Logs](cache-and-logs.md): cache directories, zstd render cache, clear-cache, and logs.

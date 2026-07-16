@@ -9,6 +9,8 @@ pub struct BehaviorConfig {
   pub auto_refresh_min_interval_ms: u64,
   pub bookmarks_left_ratio: u16,
   pub bookmarks_right_ratio: u16,
+  pub search_left_ratio: u16,
+  pub search_right_ratio: u16,
 }
 
 impl Default for BehaviorConfig {
@@ -20,6 +22,8 @@ impl Default for BehaviorConfig {
       auto_refresh_min_interval_ms: 1500,
       bookmarks_left_ratio: 2,
       bookmarks_right_ratio: 1,
+      search_left_ratio: 2,
+      search_right_ratio: 1,
     }
   }
 }
@@ -31,5 +35,7 @@ impl BehaviorConfig {
     self.auto_refresh_min_interval_ms = self.auto_refresh_min_interval_ms.max(500);
     self.bookmarks_left_ratio = self.bookmarks_left_ratio.max(1);
     self.bookmarks_right_ratio = self.bookmarks_right_ratio.max(1);
+    self.search_left_ratio = self.search_left_ratio.max(1);
+    self.search_right_ratio = self.search_right_ratio.max(1);
   }
 }

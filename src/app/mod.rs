@@ -2,6 +2,7 @@ mod bookmark_state;
 mod input;
 mod navigation;
 mod progress;
+mod search_state;
 
 use framework_tui::{
   CommandCompletion, CommandState, KeyBindings, KeyContext, KeyDispatcher, KeyHelpEntry, KeyHint,
@@ -15,6 +16,7 @@ use crate::{
   layout::ScrollLayout,
   metadata::{self, MetadataEdit, PdfMetadataEntry},
   pdf::{PageImage, PageSliceSpec, PdfDocument},
+  search::{PdfSearchIndex, PdfSearchMatch},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +24,7 @@ pub enum ViewMode {
   Viewer,
   Metadata,
   Bookmarks,
+  Search,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +59,7 @@ pub struct App {
   pub settings: Settings,
   pub keymap: KeyBindings,
   pub bookmarks_keymap: KeyBindings,
+  pub search_keymap: KeyBindings,
   pub pages: Vec<Option<PageImage>>,
   pub slices: std::collections::HashMap<PageSliceSpec, PageImage>,
   pub page_errors: Vec<Option<String>>,
@@ -81,6 +85,15 @@ pub struct App {
   pub bookmarks_all_expanded: bool,
   pub bookmarks_left_ratio: u16,
   pub bookmarks_right_ratio: u16,
+  pub search_prompt: Prompt,
+  pub search_index: Option<PdfSearchIndex>,
+  pub search_index_error: Option<String>,
+  pub search_index_loading: bool,
+  pub search_results: Vec<PdfSearchMatch>,
+  pub search_selected: Option<usize>,
+  pub search_scroll: u16,
+  pub search_left_ratio: u16,
+  pub search_right_ratio: u16,
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
   pub message: String,
@@ -90,6 +103,7 @@ pub struct App {
   quit: bool,
   editor_request: Option<EditorRequest>,
   command_state: CommandState,
+  search_command_state: CommandState,
   key_dispatcher: KeyDispatcher,
 }
 
@@ -105,6 +119,13 @@ struct InputRedrawState {
   bookmarks_expanded_len: usize,
   bookmarks_left_ratio: u16,
   bookmarks_right_ratio: u16,
+  search_input: String,
+  search_cursor: usize,
+  search_results_len: usize,
+  search_selected: Option<usize>,
+  search_scroll: u16,
+  search_index_loading: bool,
+  search_index_error: Option<String>,
   confirm: bool,
   key_help: bool,
   editor_request: bool,
@@ -133,6 +154,7 @@ impl App {
   pub fn new(document: PdfDocument, settings: Settings) -> Self {
     let keymap = settings.keymap.bindings();
     let bookmarks_keymap = settings.keymap.bookmarks_bindings();
+    let search_keymap = settings.keymap.search_bindings();
     let layout = settings.config.layout.effective();
     let page_count = document.page_count;
     let (metadata, metadata_error) = match metadata::read_pdf_metadata(&document.path) {
@@ -149,11 +171,14 @@ impl App {
     };
     let bookmarks_left_ratio = settings.config.behavior.bookmarks_left_ratio.max(1);
     let bookmarks_right_ratio = settings.config.behavior.bookmarks_right_ratio.max(1);
+    let search_left_ratio = settings.config.behavior.search_left_ratio.max(1);
+    let search_right_ratio = settings.config.behavior.search_right_ratio.max(1);
     Self {
       document,
       settings,
       keymap,
       bookmarks_keymap,
+      search_keymap,
       pages: vec![None; page_count],
       slices: std::collections::HashMap::new(),
       page_errors: vec![None; page_count],
@@ -179,6 +204,15 @@ impl App {
       bookmarks_all_expanded: false,
       bookmarks_left_ratio,
       bookmarks_right_ratio,
+      search_prompt: Prompt::text("search: ", ""),
+      search_index: None,
+      search_index_error: None,
+      search_index_loading: false,
+      search_results: Vec::new(),
+      search_selected: None,
+      search_scroll: 0,
+      search_left_ratio,
+      search_right_ratio,
       confirm: None,
       key_help: false,
       message: "ready".to_string(),
@@ -188,6 +222,7 @@ impl App {
       quit: false,
       editor_request: None,
       command_state: CommandState::default(),
+      search_command_state: CommandState::default(),
       key_dispatcher: KeyDispatcher::default(),
     }
   }
@@ -264,6 +299,12 @@ impl App {
     self.bookmarks_selected = None;
     self.bookmarks_scroll = 0;
     self.bookmarks_all_expanded = false;
+    self.search_index = None;
+    self.search_index_error = None;
+    self.search_index_loading = false;
+    self.search_results.clear();
+    self.search_selected = None;
+    self.search_scroll = 0;
     self.metadata_scroll = 0;
     if let Some(progress) = progress {
       self.set_progress_target(progress);
@@ -351,6 +392,7 @@ impl App {
       ViewMode::Viewer => "Viewer key bindings",
       ViewMode::Metadata => "Metadata key bindings",
       ViewMode::Bookmarks => "Bookmark key bindings",
+      ViewMode::Search => "Search key bindings",
     }
   }
 
@@ -369,6 +411,12 @@ impl App {
         .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
     }
 
+    if self.view == ViewMode::Search {
+      return self
+        .search_keymap
+        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+    }
+
     self
       .keymap
       .help_entries_filtered(self.key_context(), |action| self.action_available(action))
@@ -379,6 +427,7 @@ impl App {
       ViewMode::Viewer => KeyContext::Browser,
       ViewMode::Metadata => KeyContext::Detail,
       ViewMode::Bookmarks => KeyContext::Browser,
+      ViewMode::Search => KeyContext::Browser,
     }
   }
 
@@ -389,10 +438,13 @@ impl App {
     match action {
       "quit" | "command" | "help" => true,
       "clear-cache" | "clear_cache" | "refresh" => true,
+      "back" => matches!(
+        self.view,
+        ViewMode::Metadata | ViewMode::Bookmarks | ViewMode::Search
+      ),
       "scroll_down" | "scroll_up" | "page_down" | "page_up" | "next_page" | "previous_page"
-      | "home" | "end" | "metadata" | "bookmarks" => self.view == ViewMode::Viewer,
-      "back"
-      | "edit_metadata"
+      | "home" | "end" | "metadata" | "bookmarks" | "search" => self.view == ViewMode::Viewer,
+      "edit_metadata"
       | "metadata_scroll_down"
       | "metadata_scroll_up"
       | "metadata_page_down"
@@ -407,6 +459,9 @@ impl App {
       | "bookmarks_open"
       | "bookmarks_panel_narrower"
       | "bookmarks_panel_wider" => self.view == ViewMode::Bookmarks,
+      "search_next" | "search_previous" | "search_page_down" | "search_page_up" | "search_open" => {
+        self.view == ViewMode::Search
+      }
       _ => false,
     }
   }

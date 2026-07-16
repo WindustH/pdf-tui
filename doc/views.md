@@ -76,3 +76,18 @@ hovered bookmark progress. The default viewer key is `b`; the default bookmark
 edit key is `e`.
 
 Editable bookmarks are written through `pdftk` after an explicit confirmation.
+
+## Search
+
+The search view finds text embedded in the PDF. It does not run OCR.
+
+The view has two panels:
+
+- the left panel contains a search box and live result list
+- the right panel previews the page for the selected result
+
+The default panel ratio is `2:1`. As text is typed in the search box, results
+are recomputed from an in-memory index built with `pdftotext -tsv`. Each result
+shows a one-line context with the matched words highlighted. The preview uses a
+temporary highlighted PNG, so the inverted match rectangle is visible with
+native terminal image protocols as well as Chafa fallback rendering.

@@ -4,7 +4,7 @@
 
 Runtime dependencies:
 
-- `poppler` for `pdfinfo` and `pdftoppm`
+- `poppler` for `pdfinfo`, `pdftoppm`, and `pdftotext`
 - `chafa` for terminal symbol rendering fallbacks
 - `exiftool` for editing PDF metadata
 - `pdftk` for reading and editing PDF bookmarks. Homebrew provides this
@@ -63,6 +63,7 @@ layout grid <rows> <columns>
 refresh
 metadata
 bookmarks
+search
 help
 clear-cache
 quit
