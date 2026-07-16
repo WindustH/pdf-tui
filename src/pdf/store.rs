@@ -10,7 +10,9 @@ use crate::event::{AsyncEvent, PageOutcome};
 
 use super::{
   document::{PageSliceSpec, PdfDocument},
-  raster::{render_page_image, render_page_slice_image},
+  raster::{
+    preload_page_image, preload_page_slice_image, render_page_image, render_page_slice_image,
+  },
 };
 
 pub struct PageStore {
@@ -162,9 +164,12 @@ impl PageStore {
       let result = match acquire_page_permits(semaphore, permits).await {
         Ok(permits) => {
           let _permits = permits;
-          render_page_slice_image(&document, spec)
-            .await
-            .map_err(|error| error.to_string())
+          if preload {
+            preload_page_slice_image(&document, spec).await
+          } else {
+            render_page_slice_image(&document, spec).await
+          }
+          .map_err(|error| error.to_string())
         }
         Err(error) => Err(error),
       };
@@ -285,9 +290,12 @@ impl PageStore {
       let result = match acquire_page_permits(semaphore, permits).await {
         Ok(permits) => {
           let _permits = permits;
-          render_page_image(&document, key)
-            .await
-            .map_err(|error| error.to_string())
+          if preload {
+            preload_page_image(&document, key).await
+          } else {
+            render_page_image(&document, key).await
+          }
+          .map_err(|error| error.to_string())
         }
         Err(error) => Err(error),
       };

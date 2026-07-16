@@ -22,6 +22,21 @@ pub(super) async fn render_page_image(
   document: &PdfDocument,
   key: PageRequestKey,
 ) -> Result<PageImage> {
+  render_page_image_with_batch_mode(document, key, false).await
+}
+
+pub(super) async fn preload_page_image(
+  document: &PdfDocument,
+  key: PageRequestKey,
+) -> Result<PageImage> {
+  render_page_image_with_batch_mode(document, key, true).await
+}
+
+async fn render_page_image_with_batch_mode(
+  document: &PdfDocument,
+  key: PageRequestKey,
+  ensure_full_batch: bool,
+) -> Result<PageImage> {
   fs::create_dir_all(&document.page_cache_dir)
     .await
     .with_context(|| {
@@ -36,7 +51,9 @@ pub(super) async fn render_page_image(
   let target_height = key.target_height.max(1);
   let output_path = page_output_path(document, key.page_index, target_width, target_height);
 
-  if let Some(page) = read_cached_page_image(key.page_index, &output_path).await? {
+  if !ensure_full_batch
+    && let Some(page) = read_cached_page_image(key.page_index, &output_path).await?
+  {
     debug!(
       page = page_number,
       path = %output_path.display(),
@@ -45,23 +62,28 @@ pub(super) async fn render_page_image(
     return Ok(page);
   }
 
-  let (batch_start, batch_end) = page_batch_window(document, key.page_index);
-  let _lock =
-    acquire_page_image_lock(&page_batch_lock_path(document, key, batch_start, batch_end)).await?;
+  ensure_page_batch_rendered(document, key).await?;
+
   if let Some(page) = read_cached_page_image(key.page_index, &output_path).await? {
     debug!(
       page = page_number,
       path = %output_path.display(),
-      "using cached pdf page image after waiting for lock"
+      ensured_batch = ensure_full_batch,
+      "using cached pdf page image after ensuring batch"
     );
     return Ok(page);
   }
 
-  render_missing_page_batch(document, key, batch_start, batch_end).await?;
-
   read_cached_page_image(key.page_index, &output_path)
     .await?
     .with_context(|| format!("failed to read rendered page {}", output_path.display()))
+}
+
+async fn ensure_page_batch_rendered(document: &PdfDocument, key: PageRequestKey) -> Result<()> {
+  let (batch_start, batch_end) = page_batch_window(document, key.page_index);
+  let _lock =
+    acquire_page_image_lock(&page_batch_lock_path(document, key, batch_start, batch_end)).await?;
+  render_missing_page_batch(document, key, batch_start, batch_end).await
 }
 
 async fn render_missing_page_batch(
@@ -496,6 +518,21 @@ pub(super) async fn render_page_slice_image(
   document: &PdfDocument,
   spec: PageSliceSpec,
 ) -> Result<PageImage> {
+  render_page_slice_image_with_batch_mode(document, spec, false).await
+}
+
+pub(super) async fn preload_page_slice_image(
+  document: &PdfDocument,
+  spec: PageSliceSpec,
+) -> Result<PageImage> {
+  render_page_slice_image_with_batch_mode(document, spec, true).await
+}
+
+async fn render_page_slice_image_with_batch_mode(
+  document: &PdfDocument,
+  spec: PageSliceSpec,
+  ensure_full_batch: bool,
+) -> Result<PageImage> {
   let spec = spec.normalized();
   fs::create_dir_all(&document.page_cache_dir)
     .await
@@ -506,13 +543,14 @@ pub(super) async fn render_page_slice_image(
       )
     })?;
 
-  let full_page = render_page_image(
+  let full_page = render_page_image_with_batch_mode(
     document,
     PageRequestKey {
       page_index: spec.page_index,
       target_width: spec.target_width,
       target_height: spec.target_height,
     },
+    ensure_full_batch,
   )
   .await?;
   let cache_key = document.slice_cache_key(spec);
