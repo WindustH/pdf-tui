@@ -45,7 +45,7 @@ pub(super) fn draw_search(
     ])
     .split(area);
   draw_search_panel(frame, app, chunks[0], cursor_position);
-  draw_search_preview(
+  let preview_ready = draw_search_preview(
     frame,
     app,
     pages,
@@ -59,6 +59,7 @@ pub(super) fn draw_search(
     preserve_areas,
     drawn_render_keys,
   );
+  app.finish_frame_render_pass(preview_ready);
 }
 
 fn draw_search_panel(
@@ -233,7 +234,7 @@ fn draw_search_preview(
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
   drawn_render_keys: &mut Vec<String>,
-) {
+) -> bool {
   let theme = &app.settings.theme;
   let base = Style::default()
     .fg(theme.color(&theme.foreground))
@@ -253,7 +254,7 @@ fn draw_search_preview(
       Paragraph::new("No search result selected").style(base),
       inner,
     );
-    return;
+    return true;
   };
   draw_highlighted_page(
     frame,
@@ -269,7 +270,7 @@ fn draw_search_preview(
     preserve_overlays,
     preserve_areas,
     drawn_render_keys,
-  );
+  )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -287,12 +288,12 @@ fn draw_highlighted_page(
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
   drawn_render_keys: &mut Vec<String>,
-) {
+) -> bool {
   if area.width == 0 || area.height == 0 {
-    return;
+    return true;
   }
   if super::page::area_intersects_any(area, obscured_areas) {
-    return;
+    return true;
   }
   let (target_width, target_height) = super::page::page_target_pixels(
     area.width,
@@ -311,7 +312,7 @@ fn draw_highlighted_page(
       area,
       format!("page {} failed\n{error}", result.page_index + 1),
     );
-    return;
+    return true;
   }
   let Some(page) = app
     .pages
@@ -327,7 +328,7 @@ fn draw_highlighted_page(
       preserve_overlays,
       preserve_areas,
     );
-    return;
+    return false;
   };
   let highlighted = match search::highlighted_page_image(
     &app.settings.cache_dir,
@@ -338,7 +339,7 @@ fn draw_highlighted_page(
     Ok(highlighted) => highlighted,
     Err(error) => {
       super::page::draw_centered(frame, area, format!("search highlight failed\n{error}"));
-      return;
+      return true;
     }
   };
   let request = renderer.request(&highlighted, area.width, area.height, RenderKind::Fit, tx);
@@ -347,8 +348,10 @@ fn draw_highlighted_page(
       super::page::draw_rendered_page(frame, area, rendered, overlays);
       drawn_render_keys.push(rendered_key);
     }
+    true
   } else if let Some(error) = renderer.failure(&request.cache_key) {
     super::page::draw_centered(frame, area, format!("render failed\n{error}"));
+    true
   } else {
     draw_pending(
       frame,
@@ -359,6 +362,7 @@ fn draw_highlighted_page(
       preserve_overlays,
       preserve_areas,
     );
+    false
   }
 }
 

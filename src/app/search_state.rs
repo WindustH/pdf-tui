@@ -13,6 +13,7 @@ impl App {
     self.key_dispatcher.clear();
     self.request_search_index(tx);
     self.refresh_search_results();
+    self.lock_frame_navigation_if_enabled();
     self.set_message("search");
   }
 
@@ -45,6 +46,8 @@ impl App {
   }
 
   pub fn refresh_search_results(&mut self) {
+    let previous_selected = self.search_selected;
+    let previous_len = self.search_results.len();
     let query = self.search_prompt.buffer().input.trim();
     self.search_results = self
       .search_index
@@ -61,6 +64,11 @@ impl App {
           .unwrap_or(0)
           .min(self.search_results.len().saturating_sub(1)),
       );
+    }
+    if self.view == ViewMode::Search
+      && (previous_selected != self.search_selected || previous_len != self.search_results.len())
+    {
+      self.lock_frame_navigation_if_enabled();
     }
   }
 

@@ -97,6 +97,7 @@ pub struct App {
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
   pub message: String,
+  frame_navigation_locked: bool,
   pending_progress: Option<f64>,
   refresh_in_flight: bool,
   refresh_queued: bool,
@@ -131,6 +132,7 @@ struct InputRedrawState {
   editor_request: bool,
   layout: String,
   message: String,
+  frame_navigation_locked: bool,
   quit: bool,
   prompt: Option<PromptRedrawState>,
   completion: Option<CompletionRedrawState>,
@@ -216,6 +218,7 @@ impl App {
       confirm: None,
       key_help: false,
       message: "ready".to_string(),
+      frame_navigation_locked: false,
       pending_progress: None,
       refresh_in_flight: false,
       refresh_queued: false,
@@ -251,11 +254,33 @@ impl App {
     self.editor_request = Some(request);
   }
 
+  pub fn finish_frame_render_pass(&mut self, fully_rendered: bool) {
+    if fully_rendered {
+      self.frame_navigation_locked = false;
+    }
+  }
+
+  pub(super) fn lock_frame_navigation_if_enabled(&mut self) {
+    if self.settings.config.behavior.frame_sync_navigation
+      && matches!(
+        self.view,
+        ViewMode::Viewer | ViewMode::Bookmarks | ViewMode::Search
+      )
+    {
+      self.frame_navigation_locked = true;
+    }
+  }
+
+  pub(super) fn clear_frame_navigation_lock(&mut self) {
+    self.frame_navigation_locked = false;
+  }
+
   pub fn clear_cached_images(&mut self) {
     self.pages.fill(None);
     self.slices.clear();
     self.page_errors.fill(None);
     self.slice_errors.clear();
+    self.lock_frame_navigation_if_enabled();
   }
 
   pub fn apply_document_reload(
@@ -311,6 +336,7 @@ impl App {
     } else {
       self.normalize_current_layout_state();
     }
+    self.lock_frame_navigation_if_enabled();
   }
 
   pub fn finish_metadata_editor_input(

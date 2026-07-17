@@ -47,6 +47,14 @@ The progress model combines visible page regions into a weighted value. When
 switching layouts, `pdf-tui` finds the closest legal state in the new layout
 so the visible reading position remains stable.
 
+## Frame-Synced Navigation
+
+When `behavior.frame_sync_navigation` is enabled, image-browsing actions wait
+for the current frame to finish rendering before accepting another browse
+action. This covers the viewer, bookmark preview browsing, and search preview
+browsing. Command input, editing, help, refresh, and non-image metadata
+navigation remain available.
+
 ## Metadata
 
 The metadata view shows PDF file information and PDF metadata reported by

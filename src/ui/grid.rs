@@ -35,6 +35,7 @@ pub(super) fn draw_grid(
   app.set_grid_viewport(area, capacity);
   let start = app.grid_start_page;
   let mut visible = Vec::new();
+  let mut all_ready = true;
 
   for (slot_index, slot) in slots.into_iter().enumerate() {
     let page_index = start + slot_index;
@@ -43,7 +44,7 @@ pub(super) fn draw_grid(
     }
     visible.push(page_index);
     let page_area = draw_page_frame(frame, app, slot, false);
-    draw_page(
+    let ready = draw_page(
       frame,
       app,
       pages,
@@ -61,6 +62,8 @@ pub(super) fn draw_grid(
       preserve_areas,
       drawn_render_keys,
     );
+    all_ready &= ready;
   }
   preload::preload_grid_neighbors(app, pages, renderer, tx, area, &visible);
+  app.finish_frame_render_pass(all_ready);
 }

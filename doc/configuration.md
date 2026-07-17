@@ -101,6 +101,7 @@ Chafa symbols, or ASCII fallback.
 Behavior fields:
 
 - `scroll_lines`: retained for keyboard scroll compatibility
+- `frame_sync_navigation`: wait for image views to finish rendering before accepting another browse action
 - `auto_refresh`: enable a background watcher for the opened PDF
 - `auto_refresh_poll_ms`: file change polling interval
 - `auto_refresh_min_interval_ms`: minimum interval between automatic refresh requests
@@ -112,5 +113,10 @@ Behavior fields:
 Automatic refresh is disabled by default. When enabled, `pdf-tui` watches the
 opened PDF file signature and requests a refresh after updates. Repeated updates
 are rate limited by `auto_refresh_min_interval_ms`.
+
+`frame_sync_navigation` is enabled by default. It applies to viewer, bookmarks,
+and search browsing actions that change the displayed page image or preview.
+Set it to `false` for free-running navigation that can queue multiple view
+changes before rendering catches up.
 
 The default bookmarks and search panel ratio is `2:1`.

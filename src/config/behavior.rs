@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct BehaviorConfig {
   pub scroll_lines: u16,
+  pub frame_sync_navigation: bool,
   pub auto_refresh: bool,
   pub auto_refresh_poll_ms: u64,
   pub auto_refresh_min_interval_ms: u64,
@@ -17,6 +18,7 @@ impl Default for BehaviorConfig {
   fn default() -> Self {
     Self {
       scroll_lines: 4,
+      frame_sync_navigation: true,
       auto_refresh: false,
       auto_refresh_poll_ms: 500,
       auto_refresh_min_interval_ms: 1500,

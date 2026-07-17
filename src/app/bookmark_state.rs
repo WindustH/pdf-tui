@@ -62,6 +62,7 @@ impl App {
     self.view = ViewMode::Bookmarks;
     self.key_dispatcher.clear();
     self.select_bookmark_near_current_progress();
+    self.lock_frame_navigation_if_enabled();
     if let Some(error) = &self.bookmarks_error {
       self.set_message(format!("bookmarks unavailable: {error}"));
     } else if self.bookmarks.is_empty() {

@@ -75,12 +75,16 @@ pub(super) fn draw_slice(
   };
 
   let request = renderer.request(slice, area.width, area.height, RenderKind::Fit, tx);
+  let exact_ready = renderer
+    .rendered_key(&request.cache_key, &request.slot_key, false)
+    .is_some();
+  let current_failed = renderer.failure(&request.cache_key).is_some();
   if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, true) {
     if let Some(rendered) = renderer.get(&rendered_key) {
       draw_rendered_page(frame, area, rendered, overlays);
       drawn_render_keys.push(rendered_key);
     }
-    true
+    exact_ready || current_failed
   } else if let Some(error) = renderer.failure(&request.cache_key) {
     draw_centered(frame, area, format!("render failed\n{error}"));
     true
@@ -198,12 +202,16 @@ pub(super) fn draw_page(
   };
 
   let request = renderer.request(page, render_width, render_height, kind, tx);
+  let exact_ready = renderer
+    .rendered_key(&request.cache_key, &request.slot_key, false)
+    .is_some();
+  let current_failed = renderer.failure(&request.cache_key).is_some();
   if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, true) {
     if let Some(rendered) = renderer.get(&rendered_key) {
       draw_rendered_page(frame, area, rendered, overlays);
       drawn_render_keys.push(rendered_key);
     }
-    true
+    exact_ready || current_failed
   } else if let Some(error) = renderer.failure(&request.cache_key) {
     draw_centered(frame, area, format!("render failed\n{error}"));
     true

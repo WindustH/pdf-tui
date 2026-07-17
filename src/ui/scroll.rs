@@ -43,6 +43,7 @@ pub(super) fn draw_scroll(
     .y
     .saturating_add(area.height.saturating_sub(used_height) / 2);
   let mut visible_summary = Vec::new();
+  let mut all_ready = true;
   for (row_position, row_index) in visible_rows.iter().copied().enumerate() {
     let Some(row) = scroll_layout.rows.get(row_index) else {
       continue;
@@ -74,6 +75,7 @@ pub(super) fn draw_scroll(
         preserve_areas,
         drawn_render_keys,
       );
+      all_ready &= ready;
       visible_summary.push(format!(
         "p{} s{}/{} row={} y={} h={} ready={}",
         item.page_index + 1,
@@ -99,6 +101,7 @@ pub(super) fn draw_scroll(
     &scroll_layout,
     &visible_rows,
   );
+  app.finish_frame_render_pass(all_ready);
   debug!(
     scroll = app.scroll,
     focused_page = app.focused_page + 1,
@@ -109,6 +112,7 @@ pub(super) fn draw_scroll(
     visible_rows = ?visible_rows,
     visible = ?visible_summary,
     preserve_overlays = *preserve_overlays,
+    all_ready,
     "scroll draw"
   );
 }

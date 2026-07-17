@@ -44,7 +44,7 @@ pub(super) fn draw_bookmarks(
     ])
     .split(area);
   draw_bookmark_tree(frame, app, chunks[0]);
-  draw_bookmark_preview(
+  let preview_ready = draw_bookmark_preview(
     frame,
     app,
     pages,
@@ -58,6 +58,7 @@ pub(super) fn draw_bookmarks(
     preserve_areas,
     drawn_render_keys,
   );
+  app.finish_frame_render_pass(preview_ready);
 }
 
 fn draw_bookmark_tree(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -202,7 +203,7 @@ fn draw_bookmark_preview(
   preserve_overlays: &mut bool,
   preserve_areas: &mut Vec<Rect>,
   drawn_render_keys: &mut Vec<String>,
-) {
+) -> bool {
   let theme = &app.settings.theme;
   let base = Style::default()
     .fg(theme.color(&theme.foreground))
@@ -219,7 +220,7 @@ fn draw_bookmark_preview(
   let inner = super::page::safe_inner(area, 1, 1);
   let Some(bookmark) = app.selected_bookmark() else {
     frame.render_widget(Paragraph::new("No bookmark selected").style(base), inner);
-    return;
+    return true;
   };
   let page_index = bookmark
     .page_index
@@ -241,5 +242,5 @@ fn draw_bookmark_preview(
     preserve_overlays,
     preserve_areas,
     drawn_render_keys,
-  );
+  )
 }

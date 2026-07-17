@@ -72,12 +72,20 @@ impl App {
           self.metadata_scroll_down()
         }
         MouseEventKind::ScrollUp if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
-        MouseEventKind::ScrollDown if self.view == ViewMode::Bookmarks => self.bookmarks_next(),
-        MouseEventKind::ScrollUp if self.view == ViewMode::Bookmarks => self.bookmarks_previous(),
-        MouseEventKind::ScrollDown if self.view == ViewMode::Search => self.search_next(),
-        MouseEventKind::ScrollUp if self.view == ViewMode::Search => self.search_previous(),
-        MouseEventKind::ScrollDown => self.scroll_down(),
-        MouseEventKind::ScrollUp => self.scroll_up(),
+        MouseEventKind::ScrollDown if self.view == ViewMode::Bookmarks => {
+          self.handle_frame_navigation(|app| app.bookmarks_next())
+        }
+        MouseEventKind::ScrollUp if self.view == ViewMode::Bookmarks => {
+          self.handle_frame_navigation(|app| app.bookmarks_previous())
+        }
+        MouseEventKind::ScrollDown if self.view == ViewMode::Search => {
+          self.handle_frame_navigation(|app| app.search_next())
+        }
+        MouseEventKind::ScrollUp if self.view == ViewMode::Search => {
+          self.handle_frame_navigation(|app| app.search_previous())
+        }
+        MouseEventKind::ScrollDown => self.handle_frame_navigation(|app| app.scroll_down()),
+        MouseEventKind::ScrollUp => self.handle_frame_navigation(|app| app.scroll_up()),
         _ => {}
       },
       Event::Resize(_, _) => {}
@@ -87,6 +95,10 @@ impl App {
   }
 
   fn handle_bookmarks_mouse_click(&mut self, mouse: MouseEvent) {
+    if self.frame_sync_navigation_blocks() {
+      return;
+    }
+    let before = self.frame_navigation_state();
     let Some(index) = self.bookmark_index_at(mouse.column, mouse.row) else {
       return;
     };
@@ -95,9 +107,18 @@ impl App {
     } else {
       self.bookmarks_selected = Some(index);
     }
+    if self.settings.config.behavior.frame_sync_navigation
+      && before != self.frame_navigation_state()
+    {
+      self.lock_frame_navigation_if_enabled();
+    }
   }
 
   fn handle_search_mouse_click(&mut self, mouse: MouseEvent) {
+    if self.frame_sync_navigation_blocks() {
+      return;
+    }
+    let before = self.frame_navigation_state();
     let Some(index) = self.search_result_index_at(mouse.column, mouse.row) else {
       return;
     };
@@ -105,6 +126,12 @@ impl App {
       self.search_open();
     } else {
       self.search_selected = Some(index);
+    }
+    if self.frame_sync_view_has_image()
+      && self.settings.config.behavior.frame_sync_navigation
+      && before != self.frame_navigation_state()
+    {
+      self.lock_frame_navigation_if_enabled();
     }
   }
 
@@ -201,6 +228,7 @@ impl App {
       editor_request: self.editor_request.is_some(),
       layout: self.layout.label(),
       message: self.message.clone(),
+      frame_navigation_locked: self.frame_navigation_locked,
       quit: self.quit,
       prompt,
       completion,
@@ -247,14 +275,14 @@ impl App {
       "scroll_up" if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
       "page_down" if self.view == ViewMode::Metadata => self.metadata_page_down(),
       "page_up" if self.view == ViewMode::Metadata => self.metadata_page_up(),
-      "scroll_down" => self.scroll_down(),
-      "scroll_up" => self.scroll_up(),
-      "page_down" => self.page_down(),
-      "page_up" => self.page_up(),
-      "next_page" => self.next_page(),
-      "previous_page" => self.previous_page(),
-      "home" => self.home(),
-      "end" => self.end(),
+      "scroll_down" => self.handle_frame_navigation(|app| app.scroll_down()),
+      "scroll_up" => self.handle_frame_navigation(|app| app.scroll_up()),
+      "page_down" => self.handle_frame_navigation(|app| app.page_down()),
+      "page_up" => self.handle_frame_navigation(|app| app.page_up()),
+      "next_page" => self.handle_frame_navigation(|app| app.next_page()),
+      "previous_page" => self.handle_frame_navigation(|app| app.previous_page()),
+      "home" => self.handle_frame_navigation(|app| app.home()),
+      "end" => self.handle_frame_navigation(|app| app.end()),
       "clear-cache" | "clear_cache" => self.request_clear_cache(tx),
       "refresh" => self.request_refresh(tx),
       "metadata" => self.enter_metadata_view(),
@@ -266,22 +294,60 @@ impl App {
       "metadata_scroll_up" => self.metadata_scroll_up(),
       "metadata_page_down" => self.metadata_page_down(),
       "metadata_page_up" => self.metadata_page_up(),
-      "bookmarks_next" => self.bookmarks_next(),
-      "bookmarks_previous" => self.bookmarks_previous(),
-      "bookmarks_page_down" => self.bookmarks_page_down(),
-      "bookmarks_page_up" => self.bookmarks_page_up(),
+      "bookmarks_next" => self.handle_frame_navigation(|app| app.bookmarks_next()),
+      "bookmarks_previous" => self.handle_frame_navigation(|app| app.bookmarks_previous()),
+      "bookmarks_page_down" => self.handle_frame_navigation(|app| app.bookmarks_page_down()),
+      "bookmarks_page_up" => self.handle_frame_navigation(|app| app.bookmarks_page_up()),
       "bookmarks_toggle" => self.bookmarks_toggle(),
       "bookmarks_toggle_all" => self.bookmarks_toggle_all(),
-      "bookmarks_open" => self.bookmarks_open(),
+      "bookmarks_open" => self.handle_frame_navigation(|app| app.bookmarks_open()),
       "bookmarks_panel_narrower" => self.bookmarks_panel_narrower(),
       "bookmarks_panel_wider" => self.bookmarks_panel_wider(),
-      "search_next" => self.search_next(),
-      "search_previous" => self.search_previous(),
-      "search_page_down" => self.search_page_down(),
-      "search_page_up" => self.search_page_up(),
-      "search_open" => self.search_open(),
+      "search_next" => self.handle_frame_navigation(|app| app.search_next()),
+      "search_previous" => self.handle_frame_navigation(|app| app.search_previous()),
+      "search_page_down" => self.handle_frame_navigation(|app| app.search_page_down()),
+      "search_page_up" => self.handle_frame_navigation(|app| app.search_page_up()),
+      "search_open" => self.handle_frame_navigation(|app| app.search_open()),
       other => self.set_message(format!("unknown action: {other}")),
     }
+  }
+
+  fn handle_frame_navigation(&mut self, navigate: impl FnOnce(&mut Self)) {
+    if self.frame_sync_navigation_blocks() {
+      return;
+    }
+    let before = self.frame_navigation_state();
+    navigate(self);
+    if self.frame_sync_view_has_image()
+      && self.settings.config.behavior.frame_sync_navigation
+      && before != self.frame_navigation_state()
+    {
+      self.lock_frame_navigation_if_enabled();
+    }
+  }
+
+  fn frame_sync_navigation_blocks(&self) -> bool {
+    self.frame_sync_view_has_image()
+      && self.settings.config.behavior.frame_sync_navigation
+      && self.frame_navigation_locked
+  }
+
+  fn frame_sync_view_has_image(&self) -> bool {
+    matches!(
+      self.view,
+      ViewMode::Viewer | ViewMode::Bookmarks | ViewMode::Search
+    )
+  }
+
+  fn frame_navigation_state(&self) -> (ViewMode, u32, usize, usize, Option<usize>, Option<usize>) {
+    (
+      self.view,
+      self.scroll,
+      self.grid_start_page,
+      self.focused_page,
+      self.bookmarks_selected,
+      self.search_selected,
+    )
   }
 
   fn handle_search_key(&mut self, key: KeyEvent, tx: &mpsc::UnboundedSender<AsyncEvent>) {
@@ -651,6 +717,7 @@ impl App {
 
   fn enter_metadata_view(&mut self) {
     self.view = ViewMode::Metadata;
+    self.clear_frame_navigation_lock();
     self.metadata_scroll = 0;
     self.key_dispatcher.clear();
     if let Some(error) = &self.metadata_error {
@@ -664,6 +731,7 @@ impl App {
     self.view = ViewMode::Viewer;
     self.metadata_scroll = 0;
     self.key_dispatcher.clear();
+    self.lock_frame_navigation_if_enabled();
     self.set_message("ready");
   }
 

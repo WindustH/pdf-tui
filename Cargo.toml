@@ -1,6 +1,6 @@
 [package]
 name = "pdf-tui"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 license = "MIT"
 description = "Terminal PDF reader built with framework-tui and img-tui"
