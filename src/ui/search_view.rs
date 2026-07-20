@@ -292,12 +292,20 @@ fn draw_highlighted_page(
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  if super::page::area_intersects_any(area, obscured_areas) {
+  let image_area = super::page::fitted_page_area(
+    area,
+    app.terminal_cell_pixels,
+    app.page_dimensions(result.page_index),
+  );
+  if image_area.width == 0 || image_area.height == 0 {
+    return true;
+  }
+  if super::page::area_intersects_any(image_area, obscured_areas) {
     return true;
   }
   let (target_width, target_height) = super::page::page_target_pixels(
-    area.width,
-    area.height,
+    image_area.width,
+    image_area.height,
     app.terminal_cell_pixels,
     app.page_dimensions(result.page_index),
   );
@@ -309,7 +317,7 @@ fn draw_highlighted_page(
   {
     super::page::draw_centered(
       frame,
-      area,
+      image_area,
       format!("page {} failed\n{error}", result.page_index + 1),
     );
     return true;
@@ -321,7 +329,7 @@ fn draw_highlighted_page(
   else {
     draw_pending(
       frame,
-      area,
+      image_area,
       renderer,
       format!("rendering page {}", result.page_index + 1),
       frame_message,
@@ -338,24 +346,34 @@ fn draw_highlighted_page(
   ) {
     Ok(highlighted) => highlighted,
     Err(error) => {
-      super::page::draw_centered(frame, area, format!("search highlight failed\n{error}"));
+      super::page::draw_centered(
+        frame,
+        image_area,
+        format!("search highlight failed\n{error}"),
+      );
       return true;
     }
   };
-  let request = renderer.request(&highlighted, area.width, area.height, RenderKind::Fit, tx);
+  let request = renderer.request(
+    &highlighted,
+    image_area.width,
+    image_area.height,
+    RenderKind::Fit,
+    tx,
+  );
   if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, false) {
     if let Some(rendered) = renderer.get(&rendered_key) {
-      super::page::draw_rendered_page(frame, area, rendered, overlays);
+      super::page::draw_rendered_page(frame, image_area, rendered, overlays);
       drawn_render_keys.push(rendered_key);
     }
     true
   } else if let Some(error) = renderer.failure(&request.cache_key) {
-    super::page::draw_centered(frame, area, format!("render failed\n{error}"));
+    super::page::draw_centered(frame, image_area, format!("render failed\n{error}"));
     true
   } else {
     draw_pending(
       frame,
-      area,
+      image_area,
       renderer,
       format!("drawing highlighted page {}", result.page_index + 1),
       frame_message,

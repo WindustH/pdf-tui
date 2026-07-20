@@ -159,8 +159,8 @@ pub(super) fn draw_page(
   tx: &mpsc::UnboundedSender<AsyncEvent>,
   index: usize,
   area: Rect,
-  render_width: u16,
-  render_height: u16,
+  _render_width: u16,
+  _render_height: u16,
   kind: RenderKind,
   obscured_areas: &[Rect],
   overlays: &mut Vec<ProtocolOverlay>,
@@ -172,26 +172,34 @@ pub(super) fn draw_page(
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  if area_intersects_any(area, obscured_areas) {
+  let image_area = fitted_page_area(area, app.terminal_cell_pixels, app.page_dimensions(index));
+  if image_area.width == 0 || image_area.height == 0 {
+    return true;
+  }
+  if area_intersects_any(image_area, obscured_areas) {
     return true;
   }
   let (target_width, target_height) = page_target_pixels(
-    render_width,
-    render_height,
+    image_area.width,
+    image_area.height,
     app.terminal_cell_pixels,
     app.page_dimensions(index),
   );
   pages.request(index, target_width, target_height, tx);
 
   if let Some(error) = app.page_errors.get(index).and_then(|error| error.as_ref()) {
-    draw_centered(frame, area, format!("page {} failed\n{error}", index + 1));
+    draw_centered(
+      frame,
+      image_area,
+      format!("page {} failed\n{error}", index + 1),
+    );
     return true;
   }
 
   let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) else {
     draw_page_pending(
       frame,
-      area,
+      image_area,
       renderer,
       format!("rendering page {}", index + 1),
       frame_message,
@@ -201,24 +209,24 @@ pub(super) fn draw_page(
     return false;
   };
 
-  let request = renderer.request(page, render_width, render_height, kind, tx);
+  let request = renderer.request(page, image_area.width, image_area.height, kind, tx);
   let exact_ready = renderer
     .rendered_key(&request.cache_key, &request.slot_key, false)
     .is_some();
   let current_failed = renderer.failure(&request.cache_key).is_some();
   if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, true) {
     if let Some(rendered) = renderer.get(&rendered_key) {
-      draw_rendered_page(frame, area, rendered, overlays);
+      draw_rendered_page(frame, image_area, rendered, overlays);
       drawn_render_keys.push(rendered_key);
     }
     exact_ready || current_failed
   } else if let Some(error) = renderer.failure(&request.cache_key) {
-    draw_centered(frame, area, format!("render failed\n{error}"));
+    draw_centered(frame, image_area, format!("render failed\n{error}"));
     true
   } else {
     draw_page_pending(
       frame,
-      area,
+      image_area,
       renderer,
       format!("drawing page {}", index + 1),
       frame_message,
@@ -324,6 +332,39 @@ pub(super) fn page_target_pixels(
     .round()
     .clamp(1.0, f64::from(u32::MAX)) as u32;
   (target_width, target_height)
+}
+
+pub(super) fn fitted_page_area(
+  area: Rect,
+  cell_pixels: Option<(u16, u16)>,
+  page_dimensions: Option<(u32, u32)>,
+) -> Rect {
+  if area.width == 0 || area.height == 0 {
+    return area;
+  }
+  let (target_width, target_height) =
+    page_target_pixels(area.width, area.height, cell_pixels, page_dimensions);
+  let (cell_width, cell_height) = cell_pixels.unwrap_or((8, 16));
+  let width = ceil_div_u32(target_width.max(1), u32::from(cell_width.max(1)))
+    .min(u32::from(area.width))
+    .max(1) as u16;
+  let height = ceil_div_u32(target_height.max(1), u32::from(cell_height.max(1)))
+    .min(u32::from(area.height))
+    .max(1) as u16;
+  Rect::new(
+    area.x.saturating_add(area.width.saturating_sub(width) / 2),
+    area
+      .y
+      .saturating_add(area.height.saturating_sub(height) / 2),
+    width,
+    height,
+  )
+}
+
+fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
+  value
+    .saturating_add(divisor.saturating_sub(1))
+    .saturating_div(divisor.max(1))
 }
 
 pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {

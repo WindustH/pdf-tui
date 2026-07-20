@@ -252,7 +252,7 @@ impl PageStore {
     let key = PageRequestKey {
       page_index,
       target_width: target_width.max(1),
-      target_height,
+      target_height: target_height.max(1),
     };
     let preload = priority.is_preload();
     if page_index >= self.document.page_count

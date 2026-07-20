@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::warn;
 
 use crate::config::RenderConfig;
 
@@ -23,7 +24,7 @@ pub struct PdfDocument {
   pub pdftoppm_bin: String,
   pub pdftoppm_batch_pages: usize,
   pub dpi: u16,
-  pub page_size: Option<(u32, u32)>,
+  pub page_sizes: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,12 +146,16 @@ impl PdfDocument {
       pdftoppm_bin: render.pdftoppm_bin.clone(),
       pdftoppm_batch_pages: render.pdftoppm_batch_pages.max(1),
       dpi: render.page_dpi,
-      page_size: pdfinfo.page_size,
+      page_sizes: pdfinfo.page_sizes,
     })
   }
 
-  pub fn logical_page_size(&self) -> (u32, u32) {
-    self.page_size.unwrap_or((595, 842))
+  pub fn logical_page_size(&self, index: usize) -> (u32, u32) {
+    self
+      .page_sizes
+      .get(index)
+      .copied()
+      .unwrap_or(default_page_size())
   }
 
   pub(super) fn cache_key(&self, target_width: u32, target_height: u32) -> String {
@@ -179,21 +184,13 @@ impl PdfDocument {
 
 struct PdfInfo {
   page_count: usize,
-  page_size: Option<(u32, u32)>,
+  page_sizes: Vec<(u32, u32)>,
 }
 
 fn read_pdfinfo(path: &Path, pdfinfo_bin: &str) -> Result<PdfInfo> {
-  let output = Command::new(pdfinfo_bin)
-    .arg(path)
-    .output()
-    .with_context(|| format!("failed to run {pdfinfo_bin}; install poppler-utils"))?;
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    bail!("pdfinfo failed: {}", stderr.trim());
-  }
-  let stdout = String::from_utf8_lossy(&output.stdout);
+  let stdout = run_pdfinfo(path, pdfinfo_bin, &[])?;
   let mut page_count = None;
-  let mut page_size = None;
+  let mut default_size = None;
   for line in stdout.lines() {
     if let Some(value) = line.strip_prefix("Pages:") {
       page_count = Some(
@@ -203,16 +200,79 @@ fn read_pdfinfo(path: &Path, pdfinfo_bin: &str) -> Result<PdfInfo> {
           .context("failed to parse pdfinfo Pages line")?,
       );
     } else if let Some(value) = line.strip_prefix("Page size:") {
-      page_size = parse_page_size(value);
+      default_size = parse_page_size(value);
     }
   }
   let Some(page_count) = page_count else {
     bail!("pdfinfo did not report a page count");
   };
+  let fallback = default_size.unwrap_or_else(default_page_size);
+  let page_sizes = match read_pdfinfo_page_sizes(path, pdfinfo_bin, page_count, fallback) {
+    Ok(page_sizes) => page_sizes,
+    Err(error) => {
+      warn!(
+        path = %path.display(),
+        %error,
+        "failed to read per-page PDF sizes; falling back to default page size"
+      );
+      vec![fallback; page_count]
+    }
+  };
   Ok(PdfInfo {
     page_count,
-    page_size,
+    page_sizes,
   })
+}
+
+fn run_pdfinfo(path: &Path, pdfinfo_bin: &str, args: &[String]) -> Result<String> {
+  let output = Command::new(pdfinfo_bin)
+    .args(args)
+    .arg(path)
+    .output()
+    .with_context(|| format!("failed to run {pdfinfo_bin}; install poppler-utils"))?;
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!("pdfinfo failed: {}", stderr.trim());
+  }
+  Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn read_pdfinfo_page_sizes(
+  path: &Path,
+  pdfinfo_bin: &str,
+  page_count: usize,
+  fallback: (u32, u32),
+) -> Result<Vec<(u32, u32)>> {
+  if page_count == 0 {
+    return Ok(Vec::new());
+  }
+  let stdout = run_pdfinfo(
+    path,
+    pdfinfo_bin,
+    &[
+      "-f".to_string(),
+      "1".to_string(),
+      "-l".to_string(),
+      page_count.to_string(),
+    ],
+  )?;
+  let mut page_sizes = vec![fallback; page_count];
+  for line in stdout.lines() {
+    if let Some((index, size)) = parse_numbered_page_size(line)
+      && let Some(slot) = page_sizes.get_mut(index)
+    {
+      *slot = size;
+    }
+  }
+  Ok(page_sizes)
+}
+
+fn parse_numbered_page_size(line: &str) -> Option<(usize, (u32, u32))> {
+  let line = line.strip_prefix("Page")?.trim_start();
+  let (number, rest) = line.split_once("size:")?;
+  let page_number = number.trim().parse::<usize>().ok()?;
+  let size = parse_page_size(rest)?;
+  page_number.checked_sub(1).map(|index| (index, size))
 }
 
 fn parse_page_size(value: &str) -> Option<(u32, u32)> {
@@ -221,6 +281,10 @@ fn parse_page_size(value: &str) -> Option<(u32, u32)> {
   let width = width.trim().parse::<f64>().ok()?.round().max(1.0) as u32;
   let height = height.trim().parse::<f64>().ok()?.round().max(1.0) as u32;
   Some((width, height))
+}
+
+fn default_page_size() -> (u32, u32) {
+  (595, 842)
 }
 
 fn hash_slice_spec(hasher: &mut Sha256, spec: PageSliceSpec) {

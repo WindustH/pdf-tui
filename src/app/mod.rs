@@ -261,13 +261,18 @@ impl App {
   }
 
   pub(super) fn lock_frame_navigation_if_enabled(&mut self) {
-    if self.settings.config.behavior.frame_sync_navigation
-      && matches!(
-        self.view,
-        ViewMode::Viewer | ViewMode::Bookmarks | ViewMode::Search
-      )
-    {
+    if self.frame_sync_navigation_enabled() {
       self.frame_navigation_locked = true;
+    }
+  }
+
+  pub(super) fn frame_sync_navigation_enabled(&self) -> bool {
+    let behavior = &self.settings.config.behavior;
+    match self.view {
+      ViewMode::Viewer => behavior.frame_sync_navigation_viewer,
+      ViewMode::Bookmarks => behavior.frame_sync_navigation_bookmarks,
+      ViewMode::Search => behavior.frame_sync_navigation_search,
+      ViewMode::Metadata => false,
     }
   }
 
@@ -530,7 +535,7 @@ impl App {
     if index >= self.document.page_count {
       return None;
     }
-    Some(self.document.logical_page_size())
+    Some(self.document.logical_page_size(index))
   }
 
   pub fn update_viewport(&mut self, viewport: Rect) {

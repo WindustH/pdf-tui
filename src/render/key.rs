@@ -95,11 +95,11 @@ pub(super) fn kitty_image_id(
 }
 
 pub(super) fn kitty_placement_id(
-  page: &PageImage,
+  _page: &PageImage,
   mode: RenderMode,
   image_id: Option<u32>,
 ) -> Option<u32> {
-  if mode == RenderMode::Kitty && page.slice.is_some() {
+  if mode == RenderMode::Kitty {
     image_id
   } else {
     None

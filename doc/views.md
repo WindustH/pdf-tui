@@ -49,11 +49,11 @@ so the visible reading position remains stable.
 
 ## Frame-Synced Navigation
 
-When `behavior.frame_sync_navigation` is enabled, image-browsing actions wait
-for the current frame to finish rendering before accepting another browse
-action. This covers the viewer, bookmark preview browsing, and search preview
-browsing. Command input, editing, help, refresh, and non-image metadata
-navigation remain available.
+When the current view's frame-sync switch is enabled, image-browsing actions
+wait for the current frame to finish rendering before accepting another browse
+action. Viewer sync is enabled by default; bookmark and search preview sync are
+disabled by default. Command input, editing, help, refresh, and non-image
+metadata navigation remain available.
 
 ## Metadata
 

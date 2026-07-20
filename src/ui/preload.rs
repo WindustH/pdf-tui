@@ -11,7 +11,7 @@ use crate::{
   render::{RenderKind, RenderStore},
 };
 
-use super::page::{page_target_pixels, safe_inner, slice_spec_for_item};
+use super::page::{fitted_page_area, page_target_pixels, safe_inner, slice_spec_for_item};
 
 pub(super) fn pump_preload(
   app: &App,
@@ -350,14 +350,28 @@ fn preload_grid_page(
   page_area: Rect,
   preload_terminal: bool,
 ) {
+  let image_area = fitted_page_area(
+    page_area,
+    app.terminal_cell_pixels,
+    app.page_dimensions(index),
+  );
+  if image_area.width == 0 || image_area.height == 0 {
+    return;
+  }
   let (target_width, target_height) = page_target_pixels(
-    page_area.width,
-    page_area.height,
+    image_area.width,
+    image_area.height,
     app.terminal_cell_pixels,
     app.page_dimensions(index),
   );
   pages.preload(index, target_width, target_height, tx);
   if preload_terminal && let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) {
-    renderer.preload(page, page_area.width, page_area.height, RenderKind::Fit, tx);
+    renderer.preload(
+      page,
+      image_area.width,
+      image_area.height,
+      RenderKind::Fit,
+      tx,
+    );
   }
 }

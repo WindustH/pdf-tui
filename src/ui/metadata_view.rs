@@ -11,12 +11,11 @@ use crate::{app::App, config::ThemeConfig};
 pub(super) fn draw_metadata(frame: &mut Frame, app: &mut App, area: Rect) {
   app.update_viewport(area);
   let theme = &app.settings.theme;
-  let (page_width, page_height) = app.document.logical_page_size();
   let mut lines = vec![
     metadata_line("file", &app.document.file_name, theme),
     metadata_line("path", &app.document.path.display().to_string(), theme),
     metadata_line("pages", &app.document.page_count.to_string(), theme),
-    metadata_line("page size", &format!("{page_width} x {page_height}"), theme),
+    metadata_line("page size", &page_size_summary(app), theme),
     metadata_line("dpi", &app.document.dpi.to_string(), theme),
   ];
 
@@ -61,6 +60,25 @@ pub(super) fn draw_metadata(frame: &mut Frame, app: &mut App, area: Rect) {
       .wrap(Wrap { trim: false }),
     area,
   );
+}
+
+fn page_size_summary(app: &App) -> String {
+  let first = app.document.logical_page_size(0);
+  let unique = app
+    .document
+    .page_sizes
+    .iter()
+    .copied()
+    .collect::<std::collections::BTreeSet<_>>();
+  if unique.len() <= 1 {
+    return format!("{} x {}", first.0, first.1);
+  }
+  format!(
+    "mixed: {} size(s), first {} x {}",
+    unique.len(),
+    first.0,
+    first.1
+  )
 }
 
 fn metadata_line(label: &str, value: &str, theme: &ThemeConfig) -> Line<'static> {

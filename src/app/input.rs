@@ -107,9 +107,7 @@ impl App {
     } else {
       self.bookmarks_selected = Some(index);
     }
-    if self.settings.config.behavior.frame_sync_navigation
-      && before != self.frame_navigation_state()
-    {
+    if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
     }
   }
@@ -127,10 +125,7 @@ impl App {
     } else {
       self.search_selected = Some(index);
     }
-    if self.frame_sync_view_has_image()
-      && self.settings.config.behavior.frame_sync_navigation
-      && before != self.frame_navigation_state()
-    {
+    if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
     }
   }
@@ -318,25 +313,13 @@ impl App {
     }
     let before = self.frame_navigation_state();
     navigate(self);
-    if self.frame_sync_view_has_image()
-      && self.settings.config.behavior.frame_sync_navigation
-      && before != self.frame_navigation_state()
-    {
+    if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
     }
   }
 
   fn frame_sync_navigation_blocks(&self) -> bool {
-    self.frame_sync_view_has_image()
-      && self.settings.config.behavior.frame_sync_navigation
-      && self.frame_navigation_locked
-  }
-
-  fn frame_sync_view_has_image(&self) -> bool {
-    matches!(
-      self.view,
-      ViewMode::Viewer | ViewMode::Bookmarks | ViewMode::Search
-    )
+    self.frame_sync_navigation_enabled() && self.frame_navigation_locked
   }
 
   fn frame_navigation_state(&self) -> (ViewMode, u32, usize, usize, Option<usize>, Option<usize>) {
