@@ -9,10 +9,12 @@ use framework_tui::{
   Prompt,
 };
 use ratatui::layout::Rect;
+use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
   bookmarks::{self, BookmarkEdit, PdfBookmark},
   config::{EffectiveLayoutConfig, Settings},
+  event::AsyncEvent,
   layout::ScrollLayout,
   metadata::{self, MetadataEdit, PdfMetadataEntry},
   pdf::{PageImage, PageSliceSpec, PdfDocument},
@@ -94,6 +96,9 @@ pub struct App {
   pub search_scroll: u16,
   pub search_left_ratio: u16,
   pub search_right_ratio: u16,
+  search_preload_generation: u64,
+  search_preload_ready_generation: u64,
+  search_preload_reset_pending: bool,
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
   pub message: String,
@@ -215,6 +220,9 @@ impl App {
       search_scroll: 0,
       search_left_ratio,
       search_right_ratio,
+      search_preload_generation: 0,
+      search_preload_ready_generation: 0,
+      search_preload_reset_pending: false,
       confirm: None,
       key_help: false,
       message: "ready".to_string(),
@@ -252,6 +260,43 @@ impl App {
 
   pub fn set_editor_request(&mut self, request: EditorRequest) {
     self.editor_request = Some(request);
+  }
+
+  pub fn search_preload_ready(&self) -> bool {
+    self.view == ViewMode::Search
+      && self.search_preload_ready_generation == self.search_preload_generation
+  }
+
+  pub fn finish_search_preload_delay(&mut self, generation: u64) -> bool {
+    if self.view != ViewMode::Search || generation != self.search_preload_generation {
+      return false;
+    }
+    self.search_preload_ready_generation = generation;
+    true
+  }
+
+  pub fn take_search_preload_reset(&mut self) -> bool {
+    std::mem::take(&mut self.search_preload_reset_pending)
+  }
+
+  pub(super) fn make_search_preload_ready_now(&mut self) {
+    self.search_preload_ready_generation = self.search_preload_generation;
+  }
+
+  pub(super) fn defer_search_preload_after_input(
+    &mut self,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) {
+    self.search_preload_generation = self.search_preload_generation.wrapping_add(1);
+    self.search_preload_reset_pending = true;
+    let generation = self.search_preload_generation;
+    let delay =
+      std::time::Duration::from_millis(self.settings.config.render.search_preload_idle_ms);
+    let tx = tx.clone();
+    tokio::spawn(async move {
+      sleep(delay).await;
+      let _ = tx.send(AsyncEvent::SearchPreloadReady { generation });
+    });
   }
 
   pub fn finish_frame_render_pass(&mut self, fully_rendered: bool) {

@@ -22,6 +22,7 @@ pub enum AsyncEvent {
   MetadataWrite(MetadataWriteOutcome),
   BookmarksWrite(BookmarksWriteOutcome),
   SearchIndex(SearchIndexOutcome),
+  SearchPreloadReady { generation: u64 },
 }
 
 #[derive(Debug)]

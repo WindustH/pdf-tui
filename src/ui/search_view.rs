@@ -18,6 +18,8 @@ use crate::{
   search::{self, PdfSearchMatch},
 };
 
+use super::preload;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_search(
   frame: &mut Frame,
@@ -59,6 +61,9 @@ pub(super) fn draw_search(
     preserve_areas,
     drawn_render_keys,
   );
+  if app.search_preload_ready() {
+    preload::preload_search_previews(app, pages, renderer, tx, area);
+  }
   app.finish_frame_render_pass(preview_ready);
 }
 
@@ -327,7 +332,7 @@ fn draw_highlighted_page(
     .get(result.page_index)
     .and_then(|page| page.as_ref())
   else {
-    draw_pending(
+    super::page::draw_image_pending(
       frame,
       image_area,
       renderer,
@@ -371,7 +376,7 @@ fn draw_highlighted_page(
     super::page::draw_centered(frame, image_area, format!("render failed\n{error}"));
     true
   } else {
-    draw_pending(
+    super::page::draw_image_pending(
       frame,
       image_area,
       renderer,
@@ -382,18 +387,6 @@ fn draw_highlighted_page(
     );
     false
   }
-}
-
-fn draw_pending(
-  frame: &mut Frame,
-  area: Rect,
-  _renderer: &RenderStore,
-  text: String,
-  _frame_message: &mut Option<String>,
-  _preserve_overlays: &mut bool,
-  _preserve_areas: &mut Vec<Rect>,
-) {
-  super::page::draw_centered(frame, area, text);
 }
 
 fn context_window_start(text: &str, match_start: usize, width: usize) -> usize {

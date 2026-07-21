@@ -57,7 +57,7 @@ pub(super) fn draw_slice(
   }
 
   let Some(slice) = app.slices.get(&spec) else {
-    draw_page_pending(
+    draw_image_pending(
       frame,
       area,
       renderer,
@@ -89,7 +89,7 @@ pub(super) fn draw_slice(
     draw_centered(frame, area, format!("render failed\n{error}"));
     true
   } else {
-    draw_page_pending(
+    draw_image_pending(
       frame,
       area,
       renderer,
@@ -197,7 +197,7 @@ pub(super) fn draw_page(
   }
 
   let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) else {
-    draw_page_pending(
+    draw_image_pending(
       frame,
       image_area,
       renderer,
@@ -224,7 +224,7 @@ pub(super) fn draw_page(
     draw_centered(frame, image_area, format!("render failed\n{error}"));
     true
   } else {
-    draw_page_pending(
+    draw_image_pending(
       frame,
       image_area,
       renderer,
@@ -237,8 +237,8 @@ pub(super) fn draw_page(
   }
 }
 
-fn draw_page_pending(
-  frame: &mut Frame,
+pub(super) fn draw_image_pending(
+  _frame: &mut Frame,
   area: Rect,
   renderer: &RenderStore,
   text: String,
@@ -249,10 +249,8 @@ fn draw_page_pending(
   if renderer.draws_with_protocol() {
     *preserve_overlays = true;
     preserve_areas.push(area);
-    frame_message.get_or_insert(text);
-    return;
   }
-  draw_centered(frame, area, text);
+  frame_message.get_or_insert(text);
 }
 
 pub(super) fn draw_rendered_page(

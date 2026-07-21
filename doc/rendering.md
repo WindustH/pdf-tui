@@ -2,7 +2,7 @@
 
 Rendering has two stages:
 
-1. `pdftoppm` rasterizes PDF pages into PNG files.
+1. The selected PDF raster backend rasterizes PDF pages into PNG files.
 2. `img-tui` or Chafa converts those PNG files into terminal output.
 
 Page PNGs are cached under:
@@ -11,12 +11,23 @@ Page PNGs are cached under:
 
 Page PNGs are disk-backed. Runtime state keeps only lightweight page metadata
 and short-lived decode buffers used while slicing or preparing terminal output.
-Temporary `pdftoppm` output is written under the system temp directory, usually
+Temporary backend output is written under the system temp directory, usually
 `/tmp/pdf-tui/`, before being copied or renamed into the persistent cache.
 
-`render.pdftoppm_batch_pages` controls how many consecutive pages one
-`pdftoppm` process may render. Batching reduces process startup and PDF reread
-costs during sequential reading and preloading.
+`render.pdf_raster_backend` selects `pdfium`, `mutool`, or `poppler`.
+`render.pdf_raster_batch_pages` controls how many consecutive pages one raster
+batch may render. Batching reduces process startup and PDF reread costs during
+sequential reading and preloading.
+
+The Pdfium backend uses a dynamic `libpdfium` library. `pdf-tui` looks at
+`render.pdfium_library_path`, then `PDF_TUI_PDFIUM_LIBRARY_PATH`, then packaged
+libraries installed next to the executable before falling back to the system
+library search path. The Homebrew formula uses this path to bundle Pdfium
+without writing user config.
+
+The Mutool backend runs `mutool draw`. `render.mutool_threads`,
+`render.mutool_band_height`, and `render.mutool_parallel` control its threaded
+banded rendering mode.
 
 Rendered terminal streams are cached under:
 
@@ -61,7 +72,7 @@ state. Runtime-only placement state is managed by `img-tui`.
 Preloading is tiered by distance from the visible region:
 
 - `render.preload_ahead` and `render.preload_behind` warm the outer page PNG
-  cache and trigger batched `pdftoppm` output.
+  cache and trigger batched raster backend output.
 - `render.preload_slice_ahead` and `render.preload_slice_behind` warm nearer
   scroll-slice PNGs.
 - `render.preload_terminal_ahead` and `render.preload_terminal_behind` warm the
@@ -72,6 +83,11 @@ orders work as visible requests, then slice preloads, then page PNG preloads.
 The terminal-render scheduler orders work as visible requests, then terminal
 stream preloads. A queued preload is promoted when it becomes needed by the
 visible viewport.
+
+Search preview preloading waits for `render.search_preload_idle_ms` after text
+input so filtering does not keep starting work for short-lived result sets.
+Moving between search results skips that delay and preloads around the current
+selection immediately.
 
 ## Protocol Rendering
 

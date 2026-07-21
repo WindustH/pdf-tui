@@ -3,13 +3,21 @@
 Install the external tools used at runtime:
 
 ```sh
-sudo pacman -S poppler chafa perl-image-exiftool pdftk
-brew install poppler chafa exiftool pdftk-java
+sudo pacman -S poppler chafa perl-image-exiftool pdftk mupdf-tools
+yay -S pdfium-binaries-bin
+brew install poppler chafa exiftool pdftk-java mupdf
 ```
 
-`poppler` provides `pdfinfo` and `pdftoppm`, `chafa` provides terminal symbol
-fallback rendering, `exiftool` edits PDF metadata, and `pdftk` reads and writes
-PDF bookmarks. On Homebrew, the `pdftk` command is provided by `pdftk-java`.
+`poppler` provides `pdfinfo`, `pdftotext`, and the optional Poppler raster
+backend. `pdfium` is the default raster backend, `mupdf` provides the optional
+`mutool` backend, `chafa` provides terminal symbol fallback rendering,
+`exiftool` edits PDF metadata, and `pdftk` reads and writes PDF bookmarks. On
+Homebrew, the `pdftk` command is provided by `pdftk-java`.
+
+The Homebrew formula bundles a compatible Pdfium dynamic library and launches
+`pdf-tui` with `PDF_TUI_PDFIUM_LIBRARY_PATH` set. Source builds on macOS still
+need a compatible `libpdfium.dylib` through `PDF_TUI_PDFIUM_LIBRARY_PATH` or
+`render.pdfium_library_path`.
 
 Clone the repository with submodules:
 

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Rect};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -9,6 +9,7 @@ use crate::{
   layout,
   pdf::PageStore,
   render::{RenderKind, RenderStore},
+  search,
 };
 
 use super::page::{fitted_page_area, page_target_pixels, safe_inner, slice_spec_for_item};
@@ -19,29 +20,34 @@ pub(super) fn pump_preload(
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
 ) {
-  if app.view != ViewMode::Viewer {
-    return;
-  }
   let Some(area) = app.viewport else {
     return;
   };
-  if app.layout.is_scroll() {
-    let Some(scroll_layout) = app.last_scroll_layout.as_ref() else {
-      return;
-    };
-    let visible_rows = layout::visible_scroll_rows(
-      scroll_layout,
-      app.scroll as usize,
-      area.height,
-      app.layout.scroll_divisor,
-    );
-    preload_scroll_neighbors(app, pages, renderer, tx, area, scroll_layout, &visible_rows);
-  } else {
-    let capacity = layout::grid_slots(area, &app.layout).len().max(1);
-    let start = app.grid_start_page;
-    let end = start.saturating_add(capacity).min(app.document.page_count);
-    let visible = (start..end).collect::<Vec<_>>();
-    preload_grid_neighbors(app, pages, renderer, tx, area, &visible);
+  match app.view {
+    ViewMode::Viewer if app.layout.is_scroll() => {
+      let Some(scroll_layout) = app.last_scroll_layout.as_ref() else {
+        return;
+      };
+      let visible_rows = layout::visible_scroll_rows(
+        scroll_layout,
+        app.scroll as usize,
+        area.height,
+        app.layout.scroll_divisor,
+      );
+      preload_scroll_neighbors(app, pages, renderer, tx, area, scroll_layout, &visible_rows);
+    }
+    ViewMode::Viewer => {
+      let capacity = layout::grid_slots(area, &app.layout).len().max(1);
+      let start = app.grid_start_page;
+      let end = start.saturating_add(capacity).min(app.document.page_count);
+      let visible = (start..end).collect::<Vec<_>>();
+      preload_grid_neighbors(app, pages, renderer, tx, area, &visible);
+    }
+    ViewMode::Bookmarks => preload_bookmark_previews(app, pages, renderer, tx, area),
+    ViewMode::Search if app.search_preload_ready() => {
+      preload_search_previews(app, pages, renderer, tx, area);
+    }
+    ViewMode::Search | ViewMode::Metadata => {}
   }
 }
 
@@ -195,7 +201,7 @@ fn preload_scroll_next_pages(
   let Some(last_visible_page) = max_page_in_rows(scroll_layout, visible_rows) else {
     return;
   };
-  let pages_ahead = app.document.pdftoppm_batch_pages.max(1);
+  let pages_ahead = app.document.pdf_raster_batch_pages.max(1);
   let end = last_visible_page
     .saturating_add(pages_ahead)
     .min(app.document.page_count.saturating_sub(1));
@@ -374,4 +380,202 @@ fn preload_grid_page(
       tx,
     );
   }
+}
+
+pub(super) fn preload_bookmark_previews(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  area: Rect,
+) {
+  let Some(inner) = preview_inner(area, app.bookmarks_left_ratio, app.bookmarks_right_ratio) else {
+    return;
+  };
+  let Some(selected) = app.bookmarks_selected else {
+    return;
+  };
+  let visible = app.visible_bookmark_indices();
+  let Some(selected_pos) = visible.iter().position(|index| *index == selected) else {
+    return;
+  };
+  let ahead = app.settings.config.render.preload_ahead;
+  let behind = app.settings.config.render.preload_behind;
+  let terminal_ahead =
+    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
+  let terminal_behind =
+    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
+  let start = selected_pos.saturating_sub(behind);
+  let end = selected_pos
+    .saturating_add(ahead)
+    .min(visible.len().saturating_sub(1));
+  let mut seen_pages = HashSet::new();
+  for pos in start..=end {
+    let Some(bookmark) = visible.get(pos).and_then(|index| app.bookmarks.get(*index)) else {
+      continue;
+    };
+    let page_index = bookmark
+      .page_index
+      .min(app.document.page_count.saturating_sub(1));
+    if !seen_pages.insert(page_index) {
+      continue;
+    }
+    let distance = pos.abs_diff(selected_pos);
+    let preload_terminal = if pos >= selected_pos {
+      distance <= terminal_ahead
+    } else {
+      distance <= terminal_behind
+    };
+    preload_page_preview(
+      app,
+      pages,
+      renderer,
+      tx,
+      page_index,
+      inner,
+      preload_terminal,
+    );
+  }
+}
+
+pub(super) fn preload_search_previews(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  area: Rect,
+) {
+  let query = app.search_prompt.buffer().input.trim();
+  if query.is_empty() || app.search_results.is_empty() {
+    return;
+  }
+  let Some(inner) = preview_inner(area, app.search_left_ratio, app.search_right_ratio) else {
+    return;
+  };
+  let Some(selected) = app.search_selected else {
+    return;
+  };
+  let ahead = app.settings.config.render.preload_ahead;
+  let behind = app.settings.config.render.preload_behind;
+  let terminal_ahead =
+    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
+  let terminal_behind =
+    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
+  let start = selected.saturating_sub(behind);
+  let end = selected
+    .saturating_add(ahead)
+    .min(app.search_results.len().saturating_sub(1));
+
+  for index in start..=end {
+    let Some(result) = app.search_results.get(index) else {
+      continue;
+    };
+    let distance = index.abs_diff(selected);
+    let preload_terminal = if index >= selected {
+      distance <= terminal_ahead
+    } else {
+      distance <= terminal_behind
+    };
+    preload_search_preview(app, pages, renderer, tx, result, inner, preload_terminal);
+  }
+}
+
+fn preload_search_preview(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  result: &search::PdfSearchMatch,
+  area: Rect,
+  preload_terminal: bool,
+) {
+  let image_area = fitted_page_area(
+    area,
+    app.terminal_cell_pixels,
+    app.page_dimensions(result.page_index),
+  );
+  if image_area.width == 0 || image_area.height == 0 {
+    return;
+  }
+  let (target_width, target_height) = page_target_pixels(
+    image_area.width,
+    image_area.height,
+    app.terminal_cell_pixels,
+    app.page_dimensions(result.page_index),
+  );
+  pages.preload(result.page_index, target_width, target_height, tx);
+  if !preload_terminal {
+    return;
+  }
+  let Some(page) = app
+    .pages
+    .get(result.page_index)
+    .and_then(|page| page.as_ref())
+  else {
+    return;
+  };
+  let Ok(highlighted) = search::highlighted_page_image(
+    &app.settings.cache_dir,
+    page,
+    result,
+    app.settings.config.render.search_highlight_cache_max_bytes,
+  ) else {
+    return;
+  };
+  renderer.preload(
+    &highlighted,
+    image_area.width,
+    image_area.height,
+    RenderKind::Fit,
+    tx,
+  );
+}
+
+fn preload_page_preview(
+  app: &App,
+  pages: &mut PageStore,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  page_index: usize,
+  area: Rect,
+  preload_terminal: bool,
+) {
+  let image_area = fitted_page_area(
+    area,
+    app.terminal_cell_pixels,
+    app.page_dimensions(page_index),
+  );
+  if image_area.width == 0 || image_area.height == 0 {
+    return;
+  }
+  let (target_width, target_height) = page_target_pixels(
+    image_area.width,
+    image_area.height,
+    app.terminal_cell_pixels,
+    app.page_dimensions(page_index),
+  );
+  pages.preload(page_index, target_width, target_height, tx);
+  if preload_terminal && let Some(page) = app.pages.get(page_index).and_then(|page| page.as_ref()) {
+    renderer.preload(
+      page,
+      image_area.width,
+      image_area.height,
+      RenderKind::Fit,
+      tx,
+    );
+  }
+}
+
+fn preview_inner(area: Rect, left_ratio: u16, right_ratio: u16) -> Option<Rect> {
+  let left_ratio = u32::from(left_ratio.max(1));
+  let right_ratio = u32::from(right_ratio.max(1));
+  let chunks = ratatui::layout::Layout::default()
+    .direction(Direction::Horizontal)
+    .constraints([
+      Constraint::Ratio(left_ratio, left_ratio.saturating_add(right_ratio)),
+      Constraint::Ratio(right_ratio, left_ratio.saturating_add(right_ratio)),
+    ])
+    .split(area);
+  let preview = chunks.get(1).copied()?;
+  Some(safe_inner(preview, 1, 1))
 }

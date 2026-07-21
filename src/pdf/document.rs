@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
-use crate::config::RenderConfig;
+use crate::config::{PdfRasterBackend, RenderConfig};
 
 #[derive(Debug, Clone)]
 pub struct PdfDocument {
@@ -21,8 +21,14 @@ pub struct PdfDocument {
   pub modified_nanos: u128,
   pub page_cache_dir: PathBuf,
   pub page_temp_dir: PathBuf,
+  pub raster_backend: PdfRasterBackend,
+  pub pdf_raster_batch_pages: usize,
   pub pdftoppm_bin: String,
-  pub pdftoppm_batch_pages: usize,
+  pub mutool_bin: String,
+  pub mutool_band_height: u32,
+  pub mutool_threads: usize,
+  pub mutool_parallel: bool,
+  pub pdfium_library_path: Option<String>,
   pub dpi: u16,
   pub page_sizes: Vec<(u32, u32)>,
 }
@@ -143,8 +149,14 @@ impl PdfDocument {
       modified_nanos: modified_nanos(&metadata),
       page_cache_dir: cache_dir,
       page_temp_dir: env::temp_dir().join("pdf-tui").join("pages"),
+      raster_backend: render.pdf_raster_backend,
+      pdf_raster_batch_pages: render.pdf_raster_batch_pages.max(1),
       pdftoppm_bin: render.pdftoppm_bin.clone(),
-      pdftoppm_batch_pages: render.pdftoppm_batch_pages.max(1),
+      mutool_bin: render.mutool_bin.clone(),
+      mutool_band_height: render.mutool_band_height.max(1),
+      mutool_threads: render.mutool_threads.max(1),
+      mutool_parallel: render.mutool_parallel,
+      pdfium_library_path: render.pdfium_library_path.clone(),
       dpi: render.page_dpi,
       page_sizes: pdfinfo.page_sizes,
     })
@@ -160,7 +172,9 @@ impl PdfDocument {
 
   pub(super) fn cache_key(&self, target_width: u32, target_height: u32) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pdf-tui-page-v3");
+    hasher.update(b"pdf-tui-page-v6");
+    hasher.update(self.raster_backend.label().as_bytes());
+    hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
     hasher.update(self.size_bytes.to_le_bytes());
     hasher.update(self.modified_nanos.to_le_bytes());
@@ -172,7 +186,9 @@ impl PdfDocument {
 
   pub(super) fn slice_cache_key(&self, spec: PageSliceSpec) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pdf-tui-page-slice-v2");
+    hasher.update(b"pdf-tui-page-slice-v5");
+    hasher.update(self.raster_backend.label().as_bytes());
+    hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
     hasher.update(self.size_bytes.to_le_bytes());
     hasher.update(self.modified_nanos.to_le_bytes());

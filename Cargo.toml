@@ -1,6 +1,6 @@
 [package]
 name = "pdf-tui"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license = "MIT"
 description = "Terminal PDF reader built with framework-tui and img-tui"
@@ -22,6 +22,7 @@ framework-tui = { path = "crates/framework-tui" }
 hex = "0.4.3"
 image = "0.25.10"
 img-tui = { path = "crates/img-tui" }
+pdfium-render = { version = "0.9.3", default-features = false, features = ["pdfium_7543", "image_025", "thread_safe"] }
 ratatui = "0.30.2"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.11.0"

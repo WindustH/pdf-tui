@@ -6,7 +6,9 @@ https://github.com/user-attachments/assets/bad500d9-49e9-4634-b381-4949f8f0a255
 
 Runtime dependencies:
 
-- `poppler` for `pdfinfo`, `pdftoppm`, and `pdftotext`
+- `poppler` for `pdfinfo`, `pdftotext`, and the optional Poppler raster backend
+- `pdfium` for the default PDF raster backend
+- `mupdf` for the optional `mutool` raster backend
 - `chafa` for terminal symbol rendering fallbacks
 - `exiftool` for editing PDF metadata
 - `pdftk` for reading and editing PDF bookmarks. Homebrew provides this
@@ -15,9 +17,16 @@ Runtime dependencies:
 Manual dependency install examples:
 
 ```sh
-sudo pacman -S poppler chafa perl-image-exiftool pdftk
-brew install poppler chafa exiftool pdftk-java
+sudo pacman -S poppler chafa perl-image-exiftool pdftk mupdf-tools
+yay -S pdfium-binaries-bin
+brew install poppler chafa exiftool pdftk-java mupdf
 ```
+
+The Homebrew formula bundles a compatible Pdfium dynamic library and launches
+`pdf-tui` with `PDF_TUI_PDFIUM_LIBRARY_PATH` set, so the default Pdfium backend
+works without editing the config. When running from source on macOS, provide a
+compatible `libpdfium.dylib` with `PDF_TUI_PDFIUM_LIBRARY_PATH` or
+`render.pdfium_library_path`.
 
 ## Installation
 

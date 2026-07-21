@@ -85,8 +85,14 @@ Running `:layout` updates `active` and `active_args` in this file. Running
 Render fields:
 
 - `pdfinfo_bin`: `pdfinfo` executable
-- `pdftoppm_bin`: `pdftoppm` executable
-- `pdftoppm_batch_pages`: maximum consecutive pages rendered by one `pdftoppm` process
+- `pdf_raster_backend`: PDF raster backend, `pdfium`, `mutool`, or `poppler`
+- `pdf_raster_batch_pages`: maximum consecutive pages rendered by one raster batch
+- `pdftoppm_bin`: `pdftoppm` executable for the Poppler backend
+- `mutool_bin`: `mutool` executable for the Mutool backend
+- `mutool_band_height`: band height passed to `mutool draw -B`
+- `mutool_threads`: thread count passed to `mutool draw -T`
+- `mutool_parallel`: enable `mutool draw -P`
+- `pdfium_library_path`: optional path to `libpdfium` or its containing directory; if unset, `PDF_TUI_PDFIUM_LIBRARY_PATH`, packaged libraries, and the system library path are tried
 - `pdftk_bin`: `pdftk` executable, used for reading and writing PDF bookmarks
 - `pdftotext_bin`: `pdftotext` executable, used for embedded text search
 - `page_dpi`: base PDF rasterization DPI
@@ -97,6 +103,7 @@ Render fields:
 - `compressed_memory_cache_max_bytes`: L2 compressed rendered terminal stream memory limit
 - `prepared_memory_cache_max_bytes`: prepared native image memory limit
 - `search_highlight_cache_max_bytes`: search preview highlight PNG cache limit
+- `search_preload_idle_ms`: delay after search text input before preloading search previews
 - `memory_compression`: keep cold rendered terminal streams compressed in memory
 - `cache_max_bytes`: L3 disk cache size limit for page PNGs, text indexes, and terminal streams
 - `cache_compression_level`: L3 zstd compression level

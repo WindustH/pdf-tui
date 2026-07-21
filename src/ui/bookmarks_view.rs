@@ -16,7 +16,7 @@ use crate::{
   render::{RenderKind, RenderStore},
 };
 
-use super::page::draw_page;
+use super::{page::draw_page, preload};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_bookmarks(
@@ -58,6 +58,7 @@ pub(super) fn draw_bookmarks(
     preserve_areas,
     drawn_render_keys,
   );
+  preload::preload_bookmark_previews(app, pages, renderer, tx, area);
   app.finish_frame_render_pass(preview_ready);
 }
 

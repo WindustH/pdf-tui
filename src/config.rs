@@ -20,7 +20,7 @@ pub use behavior::BehaviorConfig;
 pub use keymap::KeymapConfig;
 use keymap::format_keymap_toml;
 pub use layout::{EffectiveLayoutConfig, LayoutConfig};
-pub use render::RenderConfig;
+pub use render::{PdfRasterBackend, RenderConfig};
 pub use theme::ThemeConfig;
 
 #[derive(Debug, Clone)]
@@ -228,9 +228,17 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "layout.presets.*.show_border" => Some("Override whether this preset draws page borders."),
     "layout.presets.*.padding" => Some("Override the page padding for this preset."),
     "render" => Some("PDF conversion, terminal rendering, preloading, and cache settings."),
+    "render.pdf_raster_backend" => Some("PDF page raster backend: poppler, mutool, or pdfium."),
+    "render.pdf_raster_batch_pages" => Some("Number of PDF pages requested per raster batch."),
     "render.pdfinfo_bin" => Some("Command used to read PDF metadata."),
-    "render.pdftoppm_bin" => Some("Command used to rasterize PDF pages."),
-    "render.pdftoppm_batch_pages" => Some("Number of PDF pages converted per pdftoppm batch."),
+    "render.pdftoppm_bin" => Some("Command used for the poppler raster backend."),
+    "render.mutool_bin" => Some("Command used for the mutool raster backend."),
+    "render.mutool_band_height" => {
+      Some("Band height passed to mutool draw -B for threaded rendering.")
+    }
+    "render.mutool_threads" => Some("Rendering threads passed to mutool draw -T."),
+    "render.mutool_parallel" => Some("Enable mutool draw -P parallel interpretation/rendering."),
+    "render.pdfium_library_path" => Some("Optional path to libpdfium or its containing directory."),
     "render.pdftk_bin" => Some("Command used for PDF toolkit operations when available."),
     "render.pdftotext_bin" => Some("Command used to extract searchable text from PDFs."),
     "render.page_dpi" => Some("DPI used when rasterizing PDF pages before terminal rendering."),
@@ -258,6 +266,9 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     }
     "render.search_highlight_cache_max_bytes" => {
       Some("Maximum RAM used for rendered search highlights.")
+    }
+    "render.search_preload_idle_ms" => {
+      Some("Delay after search text input before preloading search previews.")
     }
     "render.max_concurrent" => Some("Maximum number of page render jobs running concurrently."),
     "render.chafa_threads" => Some("Threads requested per Chafa render job."),

@@ -57,4 +57,4 @@ search highlight PNGs, and LRU marker files. It does not delete logs.
 `logs/latest.log` and removes older `*.log` files, so only the latest run is
 kept. Logs include PDF page rendering, terminal render requests, cache
 hits/misses, preload behavior, and failures from external tools such as
-`pdfinfo`, `pdftoppm`, or Chafa.
+`pdfinfo`, the selected PDF raster backend, or Chafa.

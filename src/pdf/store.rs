@@ -121,6 +121,40 @@ impl PageStore {
     self.sequence = 0;
   }
 
+  pub fn cancel_preloads(&mut self) {
+    let pending = std::mem::take(&mut self.pending);
+    self.pending = pending
+      .into_iter()
+      .filter(|job| !job.priority.is_preload())
+      .collect();
+
+    let queued_pages = self
+      .page_priorities
+      .iter()
+      .filter_map(|(key, priority)| {
+        (priority.is_preload() && !self.active_pages.contains(key)).then_some(*key)
+      })
+      .collect::<Vec<_>>();
+    for key in queued_pages {
+      self.in_flight.remove(&key);
+      self.visible_waits.remove(&key);
+      self.page_priorities.remove(&key);
+    }
+
+    let queued_slices = self
+      .slice_priorities
+      .iter()
+      .filter_map(|(key, priority)| {
+        (priority.is_preload() && !self.active_slices.contains(key)).then_some(*key)
+      })
+      .collect::<Vec<_>>();
+    for key in queued_slices {
+      self.slice_in_flight.remove(&key);
+      self.slice_visible_waits.remove(&key);
+      self.slice_priorities.remove(&key);
+    }
+  }
+
   pub fn replace_document(&mut self, document: PdfDocument) {
     self.document = document;
     self.clear_state();
@@ -516,7 +550,7 @@ impl PageStore {
     let key = PageRequestKey {
       page_index: page.page_index,
       target_width: page.target_width.max(1),
-      target_height: page.target_height,
+      target_height: page.target_height.max(1),
     };
     self.in_flight.remove(&key);
     self.page_priorities.remove(&key);

@@ -1,22 +1,28 @@
 use std::{
   collections::HashMap,
-  fs as std_fs,
+  env, fs as std_fs,
   io::ErrorKind,
   path::{Path, PathBuf},
+  sync::{Mutex as StdMutex, OnceLock},
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use image::ImageFormat;
+use pdfium_render::prelude::*;
 use tokio::{fs, io::AsyncWriteExt, process::Command, time::sleep};
 use tracing::{debug, warn};
 
-use crate::cache;
+use crate::{cache, config::PdfRasterBackend};
 
 use super::{
   document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, modified_nanos},
   store::PageRequestKey,
 };
+
+static PDFIUM_RENDER_LOCK: StdMutex<()> = StdMutex::new(());
+static PDFIUM_INITIALIZED: OnceLock<()> = OnceLock::new();
+const PDF_TUI_PDFIUM_LIBRARY_PATH_ENV: &str = "PDF_TUI_PDFIUM_LIBRARY_PATH";
 
 pub(super) async fn render_page_image(
   document: &PdfDocument,
@@ -105,7 +111,8 @@ async fn render_missing_page_batch(
     return Ok(());
   }
 
-  let temp_dir = create_temp_work_dir(&document.page_temp_dir, "pdftoppm").await?;
+  let temp_dir =
+    create_temp_work_dir(&document.page_temp_dir, document.raster_backend.label()).await?;
   let temp_prefix = temp_dir.path().join("page");
   debug!(
     first_page = batch_start + 1,
@@ -113,40 +120,28 @@ async fn render_missing_page_batch(
     missing = missing.len(),
     target_width,
     target_height,
+    backend = document.raster_backend.label(),
     temp = %temp_prefix.display(),
-    "rendering pdf page batch with pdftoppm"
+    "rendering pdf page batch"
   );
-  let temp_outputs = if batch_start == batch_end {
-    let page_number = batch_start + 1;
-    let temp_prefix = temp_dir.path().join(format!("page-{page_number:05}"));
-    let temp_output = single_png_path_for_prefix(&temp_prefix);
-    run_pdftoppm_single(
-      document,
-      page_number,
-      target_width,
-      target_height,
-      &temp_prefix,
-    )
-    .await?;
-    HashMap::from([(page_number, temp_output)])
-  } else {
-    run_pdftoppm_batch(
-      document,
-      batch_start + 1,
-      batch_end + 1,
-      target_width,
-      target_height,
-      &temp_prefix,
-    )
-    .await?;
-    collect_numbered_png_outputs(&temp_prefix, batch_start + 1, batch_end + 1).await?
-  };
+  let temp_outputs = render_pdf_page_batch(
+    document,
+    &missing,
+    batch_start + 1,
+    batch_end + 1,
+    target_width,
+    target_height,
+    &temp_dir,
+    &temp_prefix,
+  )
+  .await?;
 
   for index in missing {
     let page_number = index + 1;
     let temp_output_path = temp_outputs.get(&page_number).with_context(|| {
       format!(
-        "pdftoppm did not produce page {page_number} under {}",
+        "{} did not produce page {page_number} under {}",
+        document.raster_backend.label(),
         temp_dir.path().display()
       )
     })?;
@@ -163,6 +158,90 @@ async fn render_missing_page_batch(
   }
   let _ = fs::remove_dir_all(temp_dir.path()).await;
   Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_pdf_page_batch(
+  document: &PdfDocument,
+  missing: &[usize],
+  first_page: usize,
+  last_page: usize,
+  target_width: u32,
+  target_height: u32,
+  temp_dir: &TempWorkDir,
+  temp_prefix: &Path,
+) -> Result<HashMap<usize, PathBuf>> {
+  match document.raster_backend {
+    PdfRasterBackend::Poppler => {
+      render_poppler_page_batch(
+        document,
+        first_page,
+        last_page,
+        target_width,
+        target_height,
+        temp_dir,
+        temp_prefix,
+      )
+      .await
+    }
+    PdfRasterBackend::Mutool => {
+      render_mutool_page_batch(
+        document,
+        first_page,
+        last_page,
+        target_width,
+        target_height,
+        temp_prefix,
+      )
+      .await
+    }
+    PdfRasterBackend::Pdfium => {
+      render_pdfium_pages(
+        document,
+        missing,
+        target_width,
+        target_height,
+        temp_dir.path(),
+      )
+      .await
+    }
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_poppler_page_batch(
+  document: &PdfDocument,
+  first_page: usize,
+  last_page: usize,
+  target_width: u32,
+  target_height: u32,
+  temp_dir: &TempWorkDir,
+  temp_prefix: &Path,
+) -> Result<HashMap<usize, PathBuf>> {
+  if first_page == last_page {
+    let temp_prefix = temp_dir.path().join(format!("page-{first_page:05}"));
+    let temp_output = single_png_path_for_prefix(&temp_prefix);
+    run_pdftoppm_single(
+      document,
+      first_page,
+      target_width,
+      target_height,
+      &temp_prefix,
+    )
+    .await?;
+    Ok(HashMap::from([(first_page, temp_output)]))
+  } else {
+    run_pdftoppm_batch(
+      document,
+      first_page,
+      last_page,
+      target_width,
+      target_height,
+      temp_prefix,
+    )
+    .await?;
+    collect_numbered_png_outputs(temp_prefix, first_page, last_page).await
+  }
 }
 
 async fn run_pdftoppm_batch(
@@ -236,6 +315,217 @@ async fn run_pdftoppm_single(
     bail!("pdftoppm failed for page {page_number}: {}", stderr.trim());
   }
   Ok(())
+}
+
+async fn render_mutool_page_batch(
+  document: &PdfDocument,
+  first_page: usize,
+  last_page: usize,
+  target_width: u32,
+  target_height: u32,
+  temp_prefix: &Path,
+) -> Result<HashMap<usize, PathBuf>> {
+  let output_pattern = temp_prefix.with_file_name(format!(
+    "{}-%d.png",
+    temp_prefix
+      .file_name()
+      .and_then(|name| name.to_str())
+      .unwrap_or("page")
+  ));
+  let mut command = Command::new(&document.mutool_bin);
+  command
+    .arg("draw")
+    .arg("-q")
+    .arg("-F")
+    .arg("png")
+    .arg("-o")
+    .arg(&output_pattern)
+    .arg("-w")
+    .arg(target_width.max(1).to_string())
+    .arg("-h")
+    .arg(target_height.max(1).to_string())
+    .arg("-f")
+    .arg("-B")
+    .arg(document.mutool_band_height.max(1).to_string())
+    .arg("-T")
+    .arg(document.mutool_threads.max(1).to_string());
+  if document.mutool_parallel {
+    command.arg("-P");
+  }
+  let pages = if first_page == last_page {
+    first_page.to_string()
+  } else {
+    format!("{first_page}-{last_page}")
+  };
+  let output = command
+    .arg(&document.path)
+    .arg(&pages)
+    .output()
+    .await
+    .with_context(|| format!("failed to run {}; install mupdf-tools", document.mutool_bin))?;
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!(
+      "mutool failed for pages {first_page}-{last_page}: {}",
+      stderr.trim()
+    );
+  }
+  collect_numbered_png_outputs(temp_prefix, first_page, last_page).await
+}
+
+async fn render_pdfium_pages(
+  document: &PdfDocument,
+  missing: &[usize],
+  target_width: u32,
+  target_height: u32,
+  temp_dir: &Path,
+) -> Result<HashMap<usize, PathBuf>> {
+  let page_numbers = missing
+    .iter()
+    .map(|index| index.saturating_add(1))
+    .collect::<Vec<_>>();
+  let pdf_path = document.path.clone();
+  let library_path = document.pdfium_library_path.clone();
+  let temp_dir = temp_dir.to_path_buf();
+  tokio::task::spawn_blocking(move || {
+    render_pdfium_pages_blocking(
+      pdf_path,
+      library_path,
+      page_numbers,
+      target_width,
+      target_height,
+      temp_dir,
+    )
+  })
+  .await
+  .map_err(|error| anyhow::anyhow!("pdfium worker failed: {error}"))?
+}
+
+fn render_pdfium_pages_blocking(
+  pdf_path: PathBuf,
+  library_path: Option<String>,
+  page_numbers: Vec<usize>,
+  target_width: u32,
+  target_height: u32,
+  temp_dir: PathBuf,
+) -> Result<HashMap<usize, PathBuf>> {
+  let _guard = PDFIUM_RENDER_LOCK
+    .lock()
+    .map_err(|error| anyhow::anyhow!("pdfium render lock poisoned: {error}"))?;
+  let pdfium = pdfium_instance(library_path.as_deref())?;
+  let document = pdfium
+    .load_pdf_from_file(&pdf_path, None)
+    .with_context(|| format!("failed to open {}", pdf_path.display()))?;
+  let width = i32::try_from(target_width.max(1)).context("pdfium target width is too large")?;
+  let height = i32::try_from(target_height.max(1)).context("pdfium target height is too large")?;
+  let render_config = PdfRenderConfig::new().set_fixed_size(width, height);
+  let mut outputs = HashMap::new();
+  for page_number in page_numbers {
+    let page_index =
+      i32::try_from(page_number.saturating_sub(1)).context("pdfium page index is too large")?;
+    let page = document
+      .pages()
+      .get(page_index)
+      .with_context(|| format!("failed to load pdfium page {page_number}"))?;
+    let image = page
+      .render_with_config(&render_config)
+      .with_context(|| format!("failed to render pdfium page {page_number}"))?
+      .as_image()
+      .with_context(|| format!("failed to convert pdfium page {page_number} to image"))?;
+    let output_path = temp_dir.join(format!("page-{page_number}.png"));
+    image
+      .save_with_format(&output_path, ImageFormat::Png)
+      .with_context(|| format!("failed to write {}", output_path.display()))?;
+    outputs.insert(page_number, output_path);
+  }
+  Ok(outputs)
+}
+
+fn pdfium_instance(library_path: Option<&str>) -> Result<Pdfium> {
+  if PDFIUM_INITIALIZED.get().is_some() {
+    return Ok(Pdfium::default());
+  }
+
+  let mut errors = Vec::new();
+  for library in pdfium_library_candidates(library_path) {
+    match Pdfium::bind_to_library(&library) {
+      Ok(bindings) => {
+        let pdfium = Pdfium::new(bindings);
+        let _ = PDFIUM_INITIALIZED.set(());
+        return Ok(pdfium);
+      }
+      Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => {
+        let _ = PDFIUM_INITIALIZED.set(());
+        return Ok(Pdfium::default());
+      }
+      Err(error) => errors.push(format!("{}: {error}", library.display())),
+    }
+  }
+
+  match Pdfium::bind_to_system_library() {
+    Ok(bindings) => {
+      let pdfium = Pdfium::new(bindings);
+      let _ = PDFIUM_INITIALIZED.set(());
+      Ok(pdfium)
+    }
+    Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => {
+      let _ = PDFIUM_INITIALIZED.set(());
+      Ok(Pdfium::default())
+    }
+    Err(error) => {
+      if errors.is_empty() {
+        Err(error).context("failed to bind to pdfium")
+      } else {
+        Err(anyhow::anyhow!(
+          "failed to bind to pdfium; tried {}; system library: {error}",
+          errors.join("; ")
+        ))
+      }
+    }
+  }
+}
+
+fn pdfium_library_candidates(configured: Option<&str>) -> Vec<PathBuf> {
+  let mut candidates = Vec::new();
+  if let Some(path) = configured.filter(|path| !path.trim().is_empty()) {
+    push_pdfium_candidate(&mut candidates, PathBuf::from(path));
+  }
+  if let Some(path) = env::var_os(PDF_TUI_PDFIUM_LIBRARY_PATH_ENV).filter(|path| !path.is_empty()) {
+    push_pdfium_candidate(&mut candidates, PathBuf::from(path));
+  }
+  for path in packaged_pdfium_candidates() {
+    if path.exists() {
+      push_pdfium_candidate(&mut candidates, path);
+    }
+  }
+  candidates
+}
+
+fn push_pdfium_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+  let library = if path.is_dir() {
+    Pdfium::pdfium_platform_library_name_at_path(&path)
+  } else {
+    path
+  };
+  if !candidates.iter().any(|candidate| candidate == &library) {
+    candidates.push(library);
+  }
+}
+
+fn packaged_pdfium_candidates() -> Vec<PathBuf> {
+  let mut out = Vec::new();
+  let Some(exe) = env::current_exe().ok() else {
+    return out;
+  };
+  let Some(dir) = exe.parent() else {
+    return out;
+  };
+  let library_name = PathBuf::from(Pdfium::pdfium_platform_library_name());
+  out.push(dir.join("pdfium").join("lib").join(&library_name));
+  if let Some(parent) = dir.parent() {
+    out.push(parent.join("pdfium").join("lib").join(&library_name));
+  }
+  out
 }
 
 async fn read_cached_page_image(page_index: usize, path: &Path) -> Result<Option<PageImage>> {
@@ -346,7 +636,7 @@ fn page_output_path(
 }
 
 fn page_batch_window(document: &PdfDocument, page_index: usize) -> (usize, usize) {
-  let batch_size = document.pdftoppm_batch_pages.max(1);
+  let batch_size = document.pdf_raster_batch_pages.max(1);
   let start = (page_index / batch_size) * batch_size;
   let end = start
     .saturating_add(batch_size.saturating_sub(1))

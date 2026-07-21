@@ -231,6 +231,10 @@ fn handle_async_event(
       if generation == current_generation {
         debug!(?event, generation, "input event accepted");
         let redraw = app.handle_input(event, tx);
+        if app.take_search_preload_reset() {
+          page_store.cancel_preloads();
+          renderer.cancel_preloads();
+        }
         debug!(
           redraw,
           scroll = app.scroll,
@@ -422,7 +426,18 @@ fn handle_async_event(
         return false;
       }
       app.finish_search_index(outcome.result);
+      if app.take_search_preload_reset() {
+        page_store.cancel_preloads();
+        renderer.cancel_preloads();
+      }
+      ui::pump_preload(app, page_store, renderer, tx);
       true
+    }
+    AsyncEvent::SearchPreloadReady { generation } => {
+      if app.finish_search_preload_delay(generation) {
+        ui::pump_preload(app, page_store, renderer, tx);
+      }
+      false
     }
     AsyncEvent::CacheClear(outcome) => match outcome.result {
       Ok(report) => {

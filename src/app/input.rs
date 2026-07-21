@@ -54,7 +54,7 @@ impl App {
       Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
       Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
       Event::Key(key) if self.view == ViewMode::Search => self.handle_search_key(key, tx),
-      Event::Paste(value) if self.view == ViewMode::Search => self.handle_search_paste(&value),
+      Event::Paste(value) if self.view == ViewMode::Search => self.handle_search_paste(&value, tx),
       Event::Key(key) => {
         let Some(token) = key_event_to_token(key) else {
           return false;
@@ -124,6 +124,7 @@ impl App {
       self.search_open();
     } else {
       self.search_selected = Some(index);
+      self.make_search_preload_ready_now();
     }
     if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
@@ -359,6 +360,7 @@ impl App {
       PromptInputResult::Changed => {
         if self.search_prompt.buffer().input != before {
           self.refresh_search_results();
+          self.defer_search_preload_after_input(tx);
         }
       }
       PromptInputResult::UnknownAction(action) if action == "help" => self.show_key_help(),
@@ -372,7 +374,7 @@ impl App {
     }
   }
 
-  fn handle_search_paste(&mut self, value: &str) {
+  fn handle_search_paste(&mut self, value: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
     let before = self.search_prompt.buffer().input.clone();
     let result = framework_handle_prompt_paste(
       &mut self.search_prompt,
@@ -381,6 +383,7 @@ impl App {
     );
     if result == PromptInputResult::Changed && self.search_prompt.buffer().input != before {
       self.refresh_search_results();
+      self.defer_search_preload_after_input(tx);
     }
   }
 

@@ -13,6 +13,7 @@ impl App {
     self.key_dispatcher.clear();
     self.request_search_index(tx);
     self.refresh_search_results();
+    self.make_search_preload_ready_now();
     self.lock_frame_navigation_if_enabled();
     self.set_message("search");
   }
@@ -24,6 +25,7 @@ impl App {
         self.search_index = Some(index);
         self.search_index_error = None;
         self.refresh_search_results();
+        self.make_search_preload_ready_now();
         self.set_message(format!(
           "search index ready: {} result(s)",
           self.search_results.len()
@@ -34,6 +36,7 @@ impl App {
         self.search_index_error = Some(error.clone());
         self.search_results.clear();
         self.search_selected = None;
+        self.make_search_preload_ready_now();
         self.set_message(format!("search index failed: {error}"));
       }
     }
@@ -130,5 +133,8 @@ impl App {
       .saturating_add_signed(delta)
       .min(self.search_results.len().saturating_sub(1));
     self.search_selected = Some(next);
+    if next != current {
+      self.make_search_preload_ready_now();
+    }
   }
 }

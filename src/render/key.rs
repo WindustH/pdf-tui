@@ -25,7 +25,7 @@ pub(super) fn render_cache_key(
   mode: RenderMode,
 ) -> String {
   let mut hasher = Sha256::new();
-  hasher.update(b"pdf-tui-render-cache-key-v4");
+  hasher.update(b"pdf-tui-render-cache-key-v7");
   hasher.update(page.path.to_string_lossy().as_bytes());
   hasher.update(page.page_index.to_le_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
@@ -81,7 +81,7 @@ pub(super) fn kitty_image_id(
     return None;
   }
   let mut hasher = Sha256::new();
-  hasher.update(b"pdf-tui-kitty-image-v3");
+  hasher.update(b"pdf-tui-kitty-image-v5");
   hasher.update(page.path.to_string_lossy().as_bytes());
   hasher.update(page.page_index.to_le_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
@@ -90,20 +90,28 @@ pub(super) fn kitty_image_id(
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());
   let digest = hasher.finalize();
-  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x00ff_ffff;
+  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x7fff_ffff;
   Some(image_id.max(1))
 }
 
 pub(super) fn kitty_placement_id(
-  _page: &PageImage,
+  page: &PageImage,
   mode: RenderMode,
   image_id: Option<u32>,
 ) -> Option<u32> {
-  if mode == RenderMode::Kitty {
-    image_id
-  } else {
-    None
+  if mode != RenderMode::Kitty {
+    return None;
   }
+  let mut hasher = Sha256::new();
+  hasher.update(b"pdf-tui-kitty-placement-v1");
+  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(page.page_index.to_le_bytes());
+  hasher.update(page.size_bytes.to_le_bytes());
+  hasher.update(page.modified_nanos.to_le_bytes());
+  hasher.update(image_id.unwrap_or_default().to_le_bytes());
+  let digest = hasher.finalize();
+  let placement_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x7fff_ffff;
+  Some(placement_id.max(1))
 }
 
 pub(super) fn render_fingerprint(bytes: &[u8]) -> u64 {
