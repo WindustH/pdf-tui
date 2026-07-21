@@ -99,3 +99,39 @@ are recomputed from an in-memory index built with `pdftotext -tsv`. Each result
 shows a one-line context with the matched words highlighted. The preview uses a
 temporary highlighted PNG, so the inverted match rectangle is visible with
 native terminal image protocols as well as Chafa fallback rendering.
+
+## Selection
+
+The viewer can create rectangular selections with the configured
+`selection_mark` action. By default this is `mouse_left`.
+
+The first click must be on a visible PDF page. `pdf-tui` inverts the terminal
+cell under the pointer with a small centered crosshair marker. Mouse drags do
+not update the selection continuously; the mark is processed on mouse release.
+The anchor position is stored as the page coordinate under the mouse event; the
+terminal cell size only controls the marker size. Terminal mouse input is
+cell-based, so this coordinate is the center of the reported terminal cell.
+Press `esc` to cancel active anchors.
+
+The second click places the opposite anchor and creates a selection draft, but
+does not immediately switch views. Once both anchors exist, the rectangle
+defined by their page-coordinate points is drawn with an inverted outline.
+Later clicks move whichever anchor is closer to the new pointer position. If
+the pointer is outside the anchor page, the endpoint is derived from the
+intersection between the page region and the rectangle formed with the fixed
+opposite anchor.
+
+Finished selections are kept as session history. The viewer key `v` opens that
+history. The selection view centers the selected region and displays it as
+large as the available terminal area allows. In the selection view, the same
+`selection_mark` action can create a new selection inside the currently shown
+selection; that child selection is inserted directly after its parent in the
+session history. Press `v` in the selection view to commit and focus a child
+selection draft, or to prompt for a new child selection when no draft exists.
+Committed child selections are rendered again from the PDF source rather than
+cropped from the parent preview. Browsing to another selection also commits the
+draft before moving.
+
+`j`/`k`, arrows, page keys, or mouse wheel browse the selection history. `y`
+copies embedded text inside the selection through the cached text index. `Y`
+renders and copies a PNG of the selection.

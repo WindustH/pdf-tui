@@ -10,6 +10,7 @@ pub struct KeymapConfig {
   pub metadata: KeymapSection,
   pub bookmarks: KeymapSection,
   pub search: KeymapSection,
+  pub selection: KeymapSection,
   #[serde(default = "default_input_keymap_section")]
   pub input: KeymapSection,
   pub global: KeymapSection,
@@ -42,6 +43,7 @@ impl Default for KeymapConfig {
         keymap: vec![
           key("q", "quit", "Quit pdf-tui"),
           key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("esc", "selection_cancel", "Cancel selection anchor"),
           key("f1", "help", "Show viewer key bindings"),
           key("j", "scroll_down", "Scroll down"),
           key("down", "scroll_down", "Scroll down"),
@@ -62,6 +64,8 @@ impl Default for KeymapConfig {
           key("m", "metadata", "Show PDF metadata"),
           key("b", "bookmarks", "Show PDF bookmarks"),
           key("s", "search", "Search PDF text"),
+          key("v", "selection", "Show PDF selections"),
+          key("mouse_left", "selection_mark", "Mark PDF selection corner"),
           key(
             ["L", "s"],
             "layout scroll 1 3",
@@ -156,6 +160,29 @@ impl Default for KeymapConfig {
           key("enter", "search_open", "Jump to search result"),
         ],
       },
+      selection: KeymapSection {
+        keymap: vec![
+          key("q", "back", "Return to viewer"),
+          key(
+            "esc",
+            "selection_cancel",
+            "Cancel selection anchor or return to viewer",
+          ),
+          key("ctrl-c", "quit", "Quit pdf-tui"),
+          key("f1", "help", "Show selection key bindings"),
+          key("mouse_left", "selection_mark", "Mark PDF selection corner"),
+          key("v", "selection_reselect", "Select inside current selection"),
+          key("j", "selection_next", "Move to next selection"),
+          key("down", "selection_next", "Move to next selection"),
+          key("pgdn", "selection_next", "Move to next selection"),
+          key("pagedown", "selection_next", "Move to next selection"),
+          key("k", "selection_previous", "Move to previous selection"),
+          key("up", "selection_previous", "Move to previous selection"),
+          key("pgup", "selection_previous", "Move to previous selection"),
+          key("y", "selection_copy_text", "Copy selected text"),
+          key("Y", "selection_copy_image", "Copy selected image"),
+        ],
+      },
       input: default_input_keymap_section(),
       global: KeymapSection {
         keymap: vec![key(":", "command", "Enter command")],
@@ -192,12 +219,22 @@ impl KeymapConfig {
     )
   }
 
+  pub fn selection_bindings(&self) -> KeyBindings {
+    KeyBindings::from_sections(
+      binding_configs(&self.selection.keymap),
+      Vec::<KeyBindingConfig>::new(),
+      binding_configs(&self.input.keymap),
+      Vec::<KeyBindingConfig>::new(),
+    )
+  }
+
   pub(super) fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
     append_missing_actions(&mut self.viewer.keymap, &default.viewer.keymap);
     append_missing_actions(&mut self.metadata.keymap, &default.metadata.keymap);
     append_missing_actions(&mut self.bookmarks.keymap, &default.bookmarks.keymap);
     append_missing_actions(&mut self.search.keymap, &default.search.keymap);
+    append_missing_actions(&mut self.selection.keymap, &default.selection.keymap);
     append_missing_actions(&mut self.input.keymap, &default.input.keymap);
     append_missing_actions(&mut self.global.keymap, &default.global.keymap);
   }
@@ -209,6 +246,7 @@ pub(super) fn format_keymap_toml(config: &KeymapConfig) -> String {
   push_keymap_section(&mut out, "metadata", &config.metadata);
   push_keymap_section(&mut out, "bookmarks", &config.bookmarks);
   push_keymap_section(&mut out, "search", &config.search);
+  push_keymap_section(&mut out, "selection", &config.selection);
   push_keymap_section(&mut out, "input", &config.input);
   push_keymap_section(&mut out, "global", &config.global);
   out

@@ -9,13 +9,13 @@ use crate::{
   layout,
   pdf::PageStore,
   render::{RenderKind, RenderStore},
-  search,
+  search, selection,
 };
 
 use super::page::{fitted_page_area, page_target_pixels, safe_inner, slice_spec_for_item};
 
 pub(super) fn pump_preload(
-  app: &App,
+  app: &mut App,
   pages: &mut PageStore,
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
@@ -47,6 +47,7 @@ pub(super) fn pump_preload(
     ViewMode::Search if app.search_preload_ready() => {
       preload_search_previews(app, pages, renderer, tx, area);
     }
+    ViewMode::Selection => preload_selection_history(app, renderer, tx, area),
     ViewMode::Search | ViewMode::Metadata => {}
   }
 }
@@ -480,6 +481,48 @@ pub(super) fn preload_search_previews(
   }
 }
 
+pub(super) fn preload_selection_history(
+  app: &mut App,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  area: Rect,
+) {
+  let Some(selected) = app.selection_index else {
+    return;
+  };
+  if app.selections.is_empty() || area.width == 0 || area.height == 0 {
+    return;
+  }
+  let ahead = app.settings.config.render.preload_ahead;
+  let behind = app.settings.config.render.preload_behind;
+  let terminal_ahead =
+    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
+  let terminal_behind =
+    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
+  let start = selected.saturating_sub(behind);
+  let end = selected
+    .saturating_add(ahead)
+    .min(app.selections.len().saturating_sub(1));
+  let selections = (start..=end)
+    .filter_map(|index| {
+      app
+        .selections
+        .get(index)
+        .copied()
+        .map(|selection| (index, selection))
+    })
+    .collect::<Vec<_>>();
+  for (index, selection) in selections {
+    let distance = index.abs_diff(selected);
+    let preload_terminal = if index >= selected {
+      distance <= terminal_ahead
+    } else {
+      distance <= terminal_behind
+    };
+    preload_selection_preview(app, renderer, tx, selection, area, preload_terminal);
+  }
+}
+
 fn preload_search_preview(
   app: &App,
   pages: &mut PageStore,
@@ -524,6 +567,44 @@ fn preload_search_preview(
   };
   renderer.preload(
     &highlighted,
+    image_area.width,
+    image_area.height,
+    RenderKind::Fit,
+    tx,
+  );
+}
+
+fn preload_selection_preview(
+  app: &mut App,
+  renderer: &mut RenderStore,
+  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  selected: selection::PdfSelection,
+  area: Rect,
+  preload_terminal: bool,
+) {
+  let (target_width, target_height) = selection::selection_preview_page_target(
+    selected,
+    area.width,
+    area.height,
+    app.terminal_cell_pixels,
+  );
+  let key = app.request_selection_image(selected, target_width, target_height, true, tx);
+  if !preload_terminal {
+    return;
+  }
+  let Some(crop) = app.selection_images.get(&key) else {
+    return;
+  };
+  let image_area = fitted_page_area(
+    area,
+    app.terminal_cell_pixels,
+    Some((crop.width.max(1), crop.height.max(1))),
+  );
+  if image_area.width == 0 || image_area.height == 0 {
+    return;
+  }
+  renderer.preload(
+    &crop,
     image_area.width,
     image_area.height,
     RenderKind::Fit,

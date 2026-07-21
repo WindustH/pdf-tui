@@ -14,6 +14,7 @@ use crate::{
   layout,
   pdf::{PageSliceSpec, PageStore},
   render::{RenderKind, RenderStore},
+  selection,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -73,6 +74,9 @@ pub(super) fn draw_slice(
     );
     return false;
   };
+
+  let marked = apply_selection_markers(app, item.page_index, slice);
+  let slice = marked.as_ref().unwrap_or(slice);
 
   let request = renderer.request(slice, area.width, area.height, RenderKind::Fit, tx);
   let exact_ready = renderer
@@ -208,6 +212,9 @@ pub(super) fn draw_page(
     );
     return false;
   };
+
+  let marked = apply_selection_markers(app, index, page);
+  let page = marked.as_ref().unwrap_or(page);
 
   let request = renderer.request(page, image_area.width, image_area.height, kind, tx);
   let exact_ready = renderer
@@ -363,6 +370,41 @@ fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
   value
     .saturating_add(divisor.saturating_sub(1))
     .saturating_div(divisor.max(1))
+}
+
+fn apply_selection_markers(
+  app: &App,
+  page_index: usize,
+  image: &crate::pdf::PageImage,
+) -> Option<crate::pdf::PageImage> {
+  let markers = app.selection_markers_for(page_index);
+  let outline = app.selection_draft_outline_for(page_index);
+  if markers.is_empty() && outline.is_none() {
+    return None;
+  }
+  let page_size = app.page_dimensions(page_index).unwrap_or((1, 1));
+  let mut current = image.clone();
+  if let Some(outline) = outline {
+    current = selection::outline_page_image(
+      &app.settings.cache_dir,
+      &current,
+      page_size,
+      outline,
+      app.settings.config.render.selection_cache_max_bytes,
+    )
+    .ok()?;
+  }
+  for marker in markers {
+    current = selection::marker_page_image(
+      &app.settings.cache_dir,
+      &current,
+      page_size,
+      marker,
+      app.settings.config.render.selection_cache_max_bytes,
+    )
+    .ok()?;
+  }
+  Some(current)
 }
 
 pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {

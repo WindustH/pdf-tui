@@ -10,6 +10,7 @@ The file is split by context:
 - `[metadata]`
 - `[bookmarks]`
 - `[search]`
+- `[selection]`
 - `[input]`
 - `[global]`
 
@@ -24,6 +25,8 @@ keymap = [
   { on = "m", run = "metadata", desc = "Show PDF metadata" },
   { on = "b", run = "bookmarks", desc = "Show PDF bookmarks" },
   { on = "s", run = "search", desc = "Search PDF text" },
+  { on = "v", run = "selection", desc = "Show PDF selections" },
+  { on = "mouse_left", run = "selection_mark", desc = "Mark PDF selection corner" },
   { on = ["L", "s"], run = "layout scroll 1 3", desc = "Use one-column scroll layout" },
 ]
 ```
@@ -37,6 +40,7 @@ Supported key names include:
 - `left`, `right`, `up`, `down`
 - `home`, `end`, `pgup`, `pgdn`
 - Yazi-style names such as `<Enter>`, `<PageDown>`, `<C-c>`
+- mouse tokens such as `mouse_left`
 
 ## Actions
 
@@ -54,6 +58,9 @@ Viewer actions:
 - `metadata`
 - `bookmarks`
 - `search`
+- `selection`
+- `selection_mark`
+- `selection_cancel`
 - `layout <name> [args...]`
 - `layout-use <name> [args...]`
 
@@ -87,6 +94,17 @@ Search actions:
 - `search_next`, `search_previous`
 - `search_page_down`, `search_page_up`
 - `search_open`
+
+Selection actions:
+
+- `back`
+- `help`
+- `selection_mark`
+- `selection_cancel`
+- `selection_reselect`
+- `selection_next`, `selection_previous`
+- `selection_copy_text`
+- `selection_copy_image`
 
 Input actions:
 

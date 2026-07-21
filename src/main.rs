@@ -1,6 +1,7 @@
 mod app;
 mod bookmarks;
 mod cache;
+mod clipboard;
 mod config;
 mod event;
 mod layout;
@@ -9,6 +10,7 @@ mod metadata;
 mod pdf;
 mod render;
 mod search;
+mod selection;
 mod terminal;
 mod ui;
 
@@ -426,6 +428,7 @@ fn handle_async_event(
         return false;
       }
       app.finish_search_index(outcome.result);
+      app.finish_pending_selection_text_copy(tx);
       if app.take_search_preload_reset() {
         page_store.cancel_preloads();
         renderer.cancel_preloads();
@@ -438,6 +441,28 @@ fn handle_async_event(
         ui::pump_preload(app, page_store, renderer, tx);
       }
       false
+    }
+    AsyncEvent::SelectionImage(outcome) => {
+      if outcome.source_size_bytes != app.document.size_bytes
+        || outcome.source_modified_nanos != app.document.modified_nanos
+      {
+        debug!(
+          source_size_bytes = outcome.source_size_bytes,
+          current_size_bytes = app.document.size_bytes,
+          source_modified_nanos = outcome.source_modified_nanos,
+          current_modified_nanos = app.document.modified_nanos,
+          "ignored stale selection image"
+        );
+        return false;
+      }
+      let redraw = !outcome.preload || app.view == app::ViewMode::Selection;
+      app.finish_selection_image(outcome);
+      ui::pump_preload(app, page_store, renderer, tx);
+      redraw
+    }
+    AsyncEvent::Clipboard(outcome) => {
+      app.finish_clipboard(outcome);
+      true
     }
     AsyncEvent::CacheClear(outcome) => match outcome.result {
       Ok(report) => {

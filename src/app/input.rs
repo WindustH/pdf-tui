@@ -35,6 +35,7 @@ const COMMAND_NAMES: &[&str] = &[
   "quit",
   "refresh",
   "search",
+  "selection",
   "write-config",
 ];
 
@@ -68,6 +69,12 @@ impl App {
         MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Search => {
           self.handle_search_mouse_click(mouse)
         }
+        MouseEventKind::Up(MouseButton::Left) if self.view == ViewMode::Viewer => {
+          self.handle_viewer_mouse_left(mouse, tx)
+        }
+        MouseEventKind::Up(MouseButton::Left) if self.view == ViewMode::Selection => {
+          self.handle_selection_mouse_left(mouse, tx)
+        }
         MouseEventKind::ScrollDown if self.view == ViewMode::Metadata => {
           self.metadata_scroll_down()
         }
@@ -84,6 +91,8 @@ impl App {
         MouseEventKind::ScrollUp if self.view == ViewMode::Search => {
           self.handle_frame_navigation(|app| app.search_previous())
         }
+        MouseEventKind::ScrollDown if self.view == ViewMode::Selection => self.selection_next(),
+        MouseEventKind::ScrollUp if self.view == ViewMode::Selection => self.selection_previous(),
         MouseEventKind::ScrollDown => self.handle_frame_navigation(|app| app.scroll_down()),
         MouseEventKind::ScrollUp => self.handle_frame_navigation(|app| app.scroll_up()),
         _ => {}
@@ -219,6 +228,12 @@ impl App {
       search_scroll: self.search_scroll,
       search_index_loading: self.search_index_loading,
       search_index_error: self.search_index_error.clone(),
+      selection_anchor_active: self.selection_anchor.is_some(),
+      selection_anchor_state: self.selection_anchor_state(),
+      selections_len: self.selections.len(),
+      selection_index: self.selection_index,
+      selection_copy_text_pending: self.selection_copy_text_pending,
+      selection_copy_image_pending: self.selection_copy_image_pending,
       confirm: self.confirm.is_some(),
       key_help: self.key_help,
       editor_request: self.editor_request.is_some(),
@@ -241,6 +256,10 @@ impl App {
       self
         .key_dispatcher
         .dispatch(&self.search_keymap, self.key_context(), token)
+    } else if self.view == ViewMode::Selection {
+      self
+        .key_dispatcher
+        .dispatch(&self.selection_keymap, self.key_context(), token)
     } else {
       self
         .key_dispatcher
@@ -264,6 +283,7 @@ impl App {
 
     match action {
       "quit" => self.quit = true,
+      "back" if self.selection_anchor.is_some() => self.cancel_selection_anchor(),
       "back" => self.back_to_viewer(),
       "command" => self.start_command(),
       "help" => self.show_key_help(),
@@ -284,6 +304,7 @@ impl App {
       "metadata" => self.enter_metadata_view(),
       "bookmarks" => self.enter_bookmarks_view(),
       "search" => self.enter_search_view(tx),
+      "selection" => self.enter_selection_view(),
       "edit_metadata" => self.start_metadata_edit(),
       "edit_bookmarks" => self.start_bookmarks_edit(),
       "metadata_scroll_down" => self.metadata_scroll_down(),
@@ -304,7 +325,50 @@ impl App {
       "search_page_down" => self.handle_frame_navigation(|app| app.search_page_down()),
       "search_page_up" => self.handle_frame_navigation(|app| app.search_page_up()),
       "search_open" => self.handle_frame_navigation(|app| app.search_open()),
+      "selection_mark" => self.set_message("selection mark requires a mouse position"),
+      "selection_cancel" if self.selection_anchor.is_some() => self.cancel_selection_anchor(),
+      "selection_cancel" if self.view == ViewMode::Selection => self.back_to_viewer(),
+      "selection_cancel" => self.cancel_selection_anchor(),
+      "selection_next" => self.selection_next(),
+      "selection_previous" => self.selection_previous(),
+      "selection_reselect" => self.selection_reselect(),
+      "selection_copy_text" => self.selection_copy_text(tx),
+      "selection_copy_image" => self.selection_copy_image(tx),
       other => self.set_message(format!("unknown action: {other}")),
+    }
+  }
+
+  fn handle_viewer_mouse_left(
+    &mut self,
+    mouse: MouseEvent,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) {
+    match self
+      .key_dispatcher
+      .dispatch(&self.keymap, self.key_context(), "mouse_left")
+    {
+      MatchResult::Action(action) if action == "selection_mark" => {
+        self.handle_selection_mouse_click(mouse, tx)
+      }
+      MatchResult::Action(action) => self.handle_action(&action, tx),
+      MatchResult::Prefix(_) | MatchResult::None => {}
+    }
+  }
+
+  fn handle_selection_mouse_left(
+    &mut self,
+    mouse: MouseEvent,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) {
+    match self
+      .key_dispatcher
+      .dispatch(&self.selection_keymap, self.key_context(), "mouse_left")
+    {
+      MatchResult::Action(action) if action == "selection_mark" => {
+        self.handle_selection_mouse_click(mouse, tx)
+      }
+      MatchResult::Action(action) => self.handle_action(&action, tx),
+      MatchResult::Prefix(_) | MatchResult::None => {}
     }
   }
 
@@ -633,6 +697,7 @@ impl App {
       "metadata" => self.enter_metadata_view(),
       "bookmarks" => self.enter_bookmarks_view(),
       "search" => self.enter_search_view(tx),
+      "selection" => self.enter_selection_view(),
       "refresh" => self.request_refresh(tx),
       "help" => self.show_key_help(),
       other => self.set_message(format!("unknown command: {other}")),
@@ -716,6 +781,10 @@ impl App {
   fn back_to_viewer(&mut self) {
     self.view = ViewMode::Viewer;
     self.metadata_scroll = 0;
+    self.selection_anchor = None;
+    self.selection_second_anchor = None;
+    self.selection_draft_index = None;
+    self.selection_display = None;
     self.key_dispatcher.clear();
     self.lock_frame_navigation_if_enabled();
     self.set_message("ready");

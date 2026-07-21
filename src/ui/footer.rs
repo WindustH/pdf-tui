@@ -183,12 +183,18 @@ fn status_view_label(app: &App) -> String {
     ViewMode::Metadata => "metadata".to_string(),
     ViewMode::Bookmarks => "bookmarks".to_string(),
     ViewMode::Search => "search".to_string(),
+    ViewMode::Selection => "selection".to_string(),
   }
 }
 
 fn status_page_label(app: &App) -> String {
   if app.document.page_count == 0 {
     return "0".to_string();
+  }
+  if app.view == ViewMode::Selection
+    && let Some(selection) = app.current_selection()
+  {
+    return (selection.page_index + 1).to_string();
   }
   if app.layout.is_scroll() {
     return (app.focused_page + 1).to_string();

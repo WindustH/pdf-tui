@@ -267,6 +267,12 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render.search_highlight_cache_max_bytes" => {
       Some("Maximum RAM used for rendered search highlights.")
     }
+    "render.selection_cache_max_bytes" => {
+      Some("Maximum disk space used for selection marker and crop PNGs.")
+    }
+    "render.selection_image_max_pixels" => {
+      Some("Maximum pixel count for the copied selection image.")
+    }
     "render.search_preload_idle_ms" => {
       Some("Delay after search text input before preloading search previews.")
     }

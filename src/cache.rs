@@ -126,6 +126,7 @@ pub async fn clear_cache(cache_dir: &Path) -> Result<CacheCleanupReport> {
     cache_dir.join("render"),
     cache_dir.join("text"),
     cache_dir.join("search-highlight"),
+    cache_dir.join("selection"),
   ];
   let mut before_bytes = 0;
   let mut before_files = 0;
@@ -284,6 +285,7 @@ fn is_cache_payload(cache_dir: &Path, path: &Path) -> bool {
     Some("png") => {
       path.starts_with(cache_dir.join("pages"))
         || path.starts_with(cache_dir.join("search-highlight"))
+        || path.starts_with(cache_dir.join("selection"))
     }
     Some("zst") => path.starts_with(cache_dir.join("text")),
     _ => false,

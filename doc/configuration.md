@@ -103,6 +103,8 @@ Render fields:
 - `compressed_memory_cache_max_bytes`: L2 compressed rendered terminal stream memory limit
 - `prepared_memory_cache_max_bytes`: prepared native image memory limit
 - `search_highlight_cache_max_bytes`: search preview highlight PNG cache limit
+- `selection_cache_max_bytes`: selection marker and crop PNG cache limit
+- `selection_image_max_pixels`: maximum pixel count for PNGs copied with `Y`
 - `search_preload_idle_ms`: delay after search text input before preloading search previews
 - `memory_compression`: keep cold rendered terminal streams compressed in memory
 - `cache_max_bytes`: L3 disk cache size limit for page PNGs, text indexes, and terminal streams

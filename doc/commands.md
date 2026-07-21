@@ -70,6 +70,10 @@ Search uses `pdftotext -tsv`, so it only finds text already embedded in the PDF.
 It does not run OCR. The right preview highlights the selected match by
 rendering an inverted rectangle over the matched text area.
 
+## `:selection`
+
+Open the session selection history view. The default viewer key is `v`.
+
 ## `:help`
 
 Show key bindings for the current interface.

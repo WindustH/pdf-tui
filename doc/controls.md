@@ -2,8 +2,8 @@
 
 Key bindings are context aware. Viewer actions are active while reading the
 PDF. Metadata actions are active in the metadata view. Bookmark actions are
-active in the bookmarks view. Input actions are active while the command prompt
-is open.
+active in the bookmarks view. Selection actions are active in the selection
+view. Input actions are active while the command prompt is open.
 
 ## Viewer
 
@@ -21,6 +21,9 @@ is open.
 - `m`: open PDF metadata
 - `b`: open PDF bookmarks
 - `s`: search embedded PDF text
+- `v`: open selection history
+- mouse left release: mark or adjust a PDF selection corner
+- `esc`: cancel an active selection anchor
 - `L s`: switch to the default scroll layout
 - `L g`: switch to the default grid layout
 - `:`: open command prompt
@@ -65,6 +68,19 @@ is open.
 - `pgdn`: move down by one result viewport
 - `pgup`: move up by one result viewport
 - `enter`: jump to the selected result
+- `ctrl-c`: quit
+
+## Selection
+
+- `q`, `esc`: return to the viewer
+- `f1`: show selection key bindings
+- `v`: commit a child selection draft, or prepare to create one
+- mouse left release: create or adjust a child selection inside the current selection
+- `j`, `down`, `pgdn`: move to the next session selection
+- `k`, `up`, `pgup`: move to the previous session selection
+- `y`: copy embedded text inside the selection
+- `Y`: copy a newly rendered PNG of the selection
+- mouse wheel: browse selection history
 - `ctrl-c`: quit
 
 ## Command Prompt

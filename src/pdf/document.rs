@@ -44,6 +44,28 @@ pub struct PageImage {
   pub slice: Option<PageSliceMetadata>,
 }
 
+#[derive(Debug)]
+pub struct TempPageImage {
+  image: PageImage,
+  temp_dir: PathBuf,
+}
+
+impl TempPageImage {
+  pub(super) fn new(image: PageImage, temp_dir: PathBuf) -> Self {
+    Self { image, temp_dir }
+  }
+
+  pub fn image(&self) -> &PageImage {
+    &self.image
+  }
+}
+
+impl Drop for TempPageImage {
+  fn drop(&mut self) {
+    let _ = fs::remove_dir_all(&self.temp_dir);
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PageSliceId {
   pub page_index: usize,

@@ -13,6 +13,7 @@ Runtime dependencies:
 - `exiftool` for editing PDF metadata
 - `pdftk` for reading and editing PDF bookmarks. Homebrew provides this
   command through the `pdftk-java` formula.
+- optional `wl-copy`, `xclip`, or `xsel` on Linux for copying selected text or PNGs
 
 Manual dependency install examples:
 
@@ -75,6 +76,7 @@ refresh
 metadata
 bookmarks
 search
+selection
 help
 clear-cache
 quit

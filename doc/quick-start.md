@@ -13,6 +13,9 @@ backend. `pdfium` is the default raster backend, `mupdf` provides the optional
 `mutool` backend, `chafa` provides terminal symbol fallback rendering,
 `exiftool` edits PDF metadata, and `pdftk` reads and writes PDF bookmarks. On
 Homebrew, the `pdftk` command is provided by `pdftk-java`.
+Selection copy uses `wl-copy` on Wayland, `xclip` or `xsel` on X11, and
+`pbcopy`/`osascript` on macOS. Install `wl-clipboard`, `xclip`, or `xsel` on
+Linux if you want selection copy support.
 
 The Homebrew formula bundles a compatible Pdfium dynamic library and launches
 `pdf-tui` with `PDF_TUI_PDFIUM_LIBRARY_PATH` set. Source builds on macOS still
@@ -77,4 +80,6 @@ Basic workflow:
 6. Press `m` to inspect metadata, then `e` to edit supported PDF metadata.
 7. Press `b` to inspect bookmarks, then `e` to edit PDF bookmarks.
 8. Press `s` to search embedded PDF text.
-9. Press `q` to quit.
+9. Left-click a visible page twice to mark a selection, then press `v`.
+10. In the selection view, press `y` to copy selected text or `Y` to copy a PNG.
+11. Press `q` to quit.

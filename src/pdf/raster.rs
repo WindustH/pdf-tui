@@ -13,10 +13,12 @@ use pdfium_render::prelude::*;
 use tokio::{fs, io::AsyncWriteExt, process::Command, time::sleep};
 use tracing::{debug, warn};
 
-use crate::{cache, config::PdfRasterBackend};
+use crate::{cache, config::PdfRasterBackend, selection::PdfSelection};
 
 use super::{
-  document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, modified_nanos},
+  document::{
+    PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, TempPageImage, modified_nanos,
+  },
   store::PageRequestKey,
 };
 
@@ -36,6 +38,125 @@ pub(super) async fn preload_page_image(
   key: PageRequestKey,
 ) -> Result<PageImage> {
   render_page_image_with_batch_mode(document, key, true).await
+}
+
+pub(super) async fn render_uncached_page_image(
+  document: &PdfDocument,
+  page_index: usize,
+  target_width: u32,
+  target_height: u32,
+) -> Result<TempPageImage> {
+  let target_width = target_width.max(1);
+  let target_height = target_height.max(1);
+  let page_number = page_index + 1;
+  let temp_dir = create_temp_work_dir(
+    &document.page_temp_dir,
+    &format!("{}-selection", document.raster_backend.label()),
+  )
+  .await?;
+  let temp_prefix = temp_dir.path().join("page");
+  debug!(
+    page = page_number,
+    target_width,
+    target_height,
+    backend = document.raster_backend.label(),
+    temp = %temp_prefix.display(),
+    "rendering uncached pdf page"
+  );
+  let outputs = render_pdf_page_batch(
+    document,
+    &[page_index],
+    page_number,
+    page_number,
+    target_width,
+    target_height,
+    &temp_dir,
+    &temp_prefix,
+  )
+  .await?;
+  let output_path = outputs.get(&page_number).with_context(|| {
+    format!(
+      "{} did not produce page {page_number} under {}",
+      document.raster_backend.label(),
+      temp_dir.path().display()
+    )
+  })?;
+  let metadata = fs::metadata(output_path)
+    .await
+    .with_context(|| format!("failed to stat {}", output_path.display()))?;
+  let (width, height) = image_dimensions(output_path).await?;
+  let temp_path = temp_dir.into_path();
+  Ok(TempPageImage::new(
+    PageImage {
+      page_index,
+      path: output_path.to_path_buf(),
+      width,
+      height,
+      size_bytes: metadata.len(),
+      modified_nanos: modified_nanos(&metadata),
+      slice: None,
+    },
+    temp_path,
+  ))
+}
+
+pub(super) async fn render_uncached_selection_image(
+  document: &PdfDocument,
+  selection: PdfSelection,
+  crop_width: u32,
+  crop_height: u32,
+) -> Result<TempPageImage> {
+  let crop_width = crop_width.max(1);
+  let crop_height = crop_height.max(1);
+  let plan = selection_crop_plan(selection, crop_width, crop_height)
+    .context("selection is outside rendered page")?;
+  let page_number = selection.page_index + 1;
+  if matches!(document.raster_backend, PdfRasterBackend::Mutool) {
+    bail!("mutool draw does not expose a reliable selection crop option");
+  }
+  let temp_dir = create_temp_work_dir(
+    &document.page_temp_dir,
+    &format!("{}-selection-crop", document.raster_backend.label()),
+  )
+  .await?;
+  debug!(
+    page = page_number,
+    target_width = plan.page_width,
+    target_height = plan.page_height,
+    crop_x = plan.crop.x,
+    crop_y = plan.crop.y,
+    crop_width = plan.crop.width,
+    crop_height = plan.crop.height,
+    backend = document.raster_backend.label(),
+    temp = %temp_dir.path().display(),
+    "rendering uncached pdf selection"
+  );
+  let output_path = match document.raster_backend {
+    PdfRasterBackend::Poppler => {
+      render_poppler_selection_image(document, page_number, plan, &temp_dir).await?
+    }
+    PdfRasterBackend::Pdfium => {
+      render_pdfium_selection_image(document, page_number, plan, temp_dir.path()).await?
+    }
+    PdfRasterBackend::Mutool => unreachable!("checked above"),
+  };
+  let metadata = fs::metadata(&output_path)
+    .await
+    .with_context(|| format!("failed to stat {}", output_path.display()))?;
+  let (width, height) = image_dimensions(&output_path).await?;
+  let temp_path = temp_dir.into_path();
+  Ok(TempPageImage::new(
+    PageImage {
+      page_index: selection.page_index,
+      path: output_path,
+      width,
+      height,
+      size_bytes: metadata.len(),
+      modified_nanos: modified_nanos(&metadata),
+      slice: None,
+    },
+    temp_path,
+  ))
 }
 
 async fn render_page_image_with_batch_mode(
@@ -317,6 +438,60 @@ async fn run_pdftoppm_single(
   Ok(())
 }
 
+async fn render_poppler_selection_image(
+  document: &PdfDocument,
+  page_number: usize,
+  plan: SelectionCropPlan,
+  temp_dir: &TempWorkDir,
+) -> Result<PathBuf> {
+  let temp_prefix = temp_dir.path().join(format!(
+    "selection-{page_number:05}-{}x{}",
+    plan.crop.width, plan.crop.height
+  ));
+  let output_path = single_png_path_for_prefix(&temp_prefix);
+  let output = Command::new(&document.pdftoppm_bin)
+    .arg("-f")
+    .arg(page_number.to_string())
+    .arg("-l")
+    .arg(page_number.to_string())
+    .arg("-singlefile")
+    .arg("-scale-to-x")
+    .arg(plan.page_width.to_string())
+    .arg("-scale-to-y")
+    .arg(plan.page_height.to_string())
+    .arg("-x")
+    .arg(plan.crop.x.to_string())
+    .arg("-y")
+    .arg(plan.crop.y.to_string())
+    .arg("-W")
+    .arg(plan.crop.width.to_string())
+    .arg("-H")
+    .arg(plan.crop.height.to_string())
+    .arg("-png")
+    .arg(&document.path)
+    .arg(&temp_prefix)
+    .output()
+    .await
+    .with_context(|| {
+      format!(
+        "failed to run {}; install poppler-utils",
+        document.pdftoppm_bin
+      )
+    })?;
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!(
+      "pdftoppm failed for page {page_number} crop {}x{}+{}+{}: {}",
+      plan.crop.width,
+      plan.crop.height,
+      plan.crop.x,
+      plan.crop.y,
+      stderr.trim()
+    );
+  }
+  Ok(output_path)
+}
+
 async fn render_mutool_page_batch(
   document: &PdfDocument,
   first_page: usize,
@@ -371,6 +546,71 @@ async fn render_mutool_page_batch(
     );
   }
   collect_numbered_png_outputs(temp_prefix, first_page, last_page).await
+}
+
+async fn render_pdfium_selection_image(
+  document: &PdfDocument,
+  page_number: usize,
+  plan: SelectionCropPlan,
+  temp_dir: &Path,
+) -> Result<PathBuf> {
+  let pdf_path = document.path.clone();
+  let library_path = document.pdfium_library_path.clone();
+  let output_path = temp_dir.join(format!(
+    "selection-{page_number:05}-{}x{}+{}+{}.png",
+    plan.crop.width, plan.crop.height, plan.crop.x, plan.crop.y
+  ));
+  tokio::task::spawn_blocking(move || {
+    render_pdfium_selection_image_blocking(pdf_path, library_path, page_number, plan, output_path)
+  })
+  .await
+  .map_err(|error| anyhow::anyhow!("pdfium selection worker failed: {error}"))?
+}
+
+fn render_pdfium_selection_image_blocking(
+  pdf_path: PathBuf,
+  library_path: Option<String>,
+  page_number: usize,
+  plan: SelectionCropPlan,
+  output_path: PathBuf,
+) -> Result<PathBuf> {
+  let _guard = PDFIUM_RENDER_LOCK
+    .lock()
+    .map_err(|error| anyhow::anyhow!("pdfium render lock poisoned: {error}"))?;
+  let pdfium = pdfium_instance(library_path.as_deref())?;
+  let document = pdfium
+    .load_pdf_from_file(&pdf_path, None)
+    .with_context(|| format!("failed to open {}", pdf_path.display()))?;
+  let page_index =
+    i32::try_from(page_number.saturating_sub(1)).context("pdfium page index is too large")?;
+  let page = document
+    .pages()
+    .get(page_index)
+    .with_context(|| format!("failed to load pdfium page {page_number}"))?;
+  let full_width =
+    i32::try_from(plan.page_width.max(1)).context("pdfium target width is too large")?;
+  let full_height =
+    i32::try_from(plan.page_height.max(1)).context("pdfium target height is too large")?;
+  let crop_width =
+    i32::try_from(plan.crop.width.max(1)).context("pdfium crop width is too large")?;
+  let crop_height =
+    i32::try_from(plan.crop.height.max(1)).context("pdfium crop height is too large")?;
+  let crop_x = i32::try_from(plan.crop.x).context("pdfium crop x is too large")?;
+  let crop_y = i32::try_from(plan.crop.y).context("pdfium crop y is too large")?;
+  let mut bitmap = PdfBitmap::empty(crop_width, crop_height, PdfBitmapFormat::BGRA)
+    .context("failed to allocate pdfium selection bitmap")?;
+  let render_config = PdfRenderConfig::new()
+    .set_fixed_size(full_width, full_height)
+    .set_origin(-crop_x, -crop_y);
+  page
+    .render_into_bitmap_with_config(&mut bitmap, &render_config)
+    .with_context(|| format!("failed to render pdfium selection on page {page_number}"))?;
+  bitmap
+    .as_image()
+    .with_context(|| format!("failed to convert pdfium selection on page {page_number} to image"))?
+    .save_with_format(&output_path, ImageFormat::Png)
+    .with_context(|| format!("failed to write {}", output_path.display()))?;
+  Ok(output_path)
 }
 
 async fn render_pdfium_pages(
@@ -660,6 +900,62 @@ fn page_batch_lock_path(
   ))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CropPixelRect {
+  x: u32,
+  y: u32,
+  width: u32,
+  height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SelectionCropPlan {
+  page_width: u32,
+  page_height: u32,
+  crop: CropPixelRect,
+}
+
+fn selection_crop_plan(
+  selection: PdfSelection,
+  crop_width: u32,
+  crop_height: u32,
+) -> Option<SelectionCropPlan> {
+  let page_width = selection.page_width.max(1.0);
+  let page_height = selection.page_height.max(1.0);
+  let rect = selection.rect.clamp_to_page(page_width, page_height);
+  if rect.is_empty() {
+    return None;
+  }
+  let crop_width = crop_width.max(1);
+  let crop_height = crop_height.max(1);
+  let x_scale = f64::from(crop_width) / rect.width().max(1.0);
+  let y_scale = f64::from(crop_height) / rect.height().max(1.0);
+  let scaled_page_width = scaled_dimension(page_width, x_scale);
+  let scaled_page_height = scaled_dimension(page_height, y_scale);
+  let x0 = (rect.x_min * x_scale).floor() as i64;
+  let y0 = (rect.y_min * y_scale).floor() as i64;
+  let crop_width = crop_width.min(scaled_page_width).max(1);
+  let crop_height = crop_height.min(scaled_page_height).max(1);
+  let x = x0.clamp(0, i64::from(scaled_page_width.saturating_sub(crop_width))) as u32;
+  let y = y0.clamp(0, i64::from(scaled_page_height.saturating_sub(crop_height))) as u32;
+  Some(SelectionCropPlan {
+    page_width: scaled_page_width,
+    page_height: scaled_page_height,
+    crop: CropPixelRect {
+      x,
+      y,
+      width: crop_width,
+      height: crop_height,
+    },
+  })
+}
+
+fn scaled_dimension(value: f64, scale: f64) -> u32 {
+  (value.max(1.0) * scale.max(0.01))
+    .ceil()
+    .clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
 async fn image_dimensions(path: &Path) -> Result<(u32, u32)> {
   let path = path.to_path_buf();
   tokio::task::spawn_blocking(move || {
@@ -677,6 +973,12 @@ struct TempWorkDir {
 impl TempWorkDir {
   fn path(&self) -> &Path {
     &self.path
+  }
+
+  fn into_path(self) -> PathBuf {
+    let path = self.path.clone();
+    std::mem::forget(self);
+    path
   }
 }
 

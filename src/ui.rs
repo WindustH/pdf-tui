@@ -7,6 +7,7 @@ mod page;
 mod preload;
 mod scroll;
 mod search_view;
+mod selection_view;
 
 use img_tui::ProtocolOverlay;
 use ratatui::{
@@ -124,7 +125,7 @@ pub fn draw(
 }
 
 pub fn pump_preload(
-  app: &App,
+  app: &mut App,
   pages: &mut PageStore,
   renderer: &mut RenderStore,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
@@ -200,6 +201,24 @@ fn draw_main(
       preserve_areas,
       drawn_render_keys,
       cursor_position,
+    );
+    return;
+  }
+
+  if app.view == ViewMode::Selection {
+    selection_view::draw_selection(
+      frame,
+      app,
+      pages,
+      renderer,
+      tx,
+      area,
+      obscured_areas,
+      overlays,
+      frame_message,
+      preserve_overlays,
+      preserve_areas,
+      drawn_render_keys,
     );
     return;
   }

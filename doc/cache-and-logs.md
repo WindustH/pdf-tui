@@ -10,6 +10,7 @@ Important subdirectories:
 - `render/`: compressed terminal render stream cache
 - `text/`: compressed embedded-text search index cache
 - `search-highlight/`: search preview highlight PNG cache
+- `selection/`: selection anchor marker PNGs and final selection crop PNGs
 - `logs/latest.log`: log file for the latest run
 
 ## Cache Cleanup
@@ -49,7 +50,14 @@ Clear cache from inside the TUI:
 ```
 
 This clears cached page PNGs, rendered terminal streams, search text indexes,
-search highlight PNGs, and LRU marker files. It does not delete logs.
+search highlight PNGs, selection PNGs, and LRU marker files. It does not delete
+logs.
+
+Selection previews and `Y` copies cache only final cropped selection PNGs.
+Poppler and Pdfium can render that crop directly from the PDF. Mutool falls
+back through a temporary full-page render because the installed `mutool draw`
+CLI does not expose a reliable crop rectangle option; that temporary page is
+written under the temporary work directory and is not kept in the page cache.
 
 ## Logs
 

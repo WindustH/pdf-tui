@@ -35,6 +35,8 @@ Rendered terminal streams are cached under:
 
 Viewer pages, grid pages, bookmark previews, and search-highlight previews all
 go through the same terminal stream render cache after their source PNG exists.
+Selection previews also go through that terminal stream cache, but their source
+PNG is the cropped selection image rather than a cached full-page PNG.
 
 At runtime, already-rendered terminal streams are first kept in raw memory
 (L1). Cold protocol streams can be compressed in memory (L2). If both memory
@@ -48,6 +50,14 @@ Embedded-text search indexes are cached under:
 The search cache avoids rerunning `pdftotext -tsv` when the PDF has not changed.
 Search-highlight preview PNGs are cached under `~/.cache/pdf-tui/search-highlight/`
 and limited by `render.search_highlight_cache_max_bytes`.
+
+Selection crop PNGs are cached under `~/.cache/pdf-tui/selection/` and limited
+by `render.selection_cache_max_bytes`. Poppler crops with `pdftoppm` crop
+arguments. Pdfium renders into a crop-sized bitmap with an origin offset. Mutool
+uses a temporary full-page fallback because its CLI crop support is not
+reliable enough for this path. Selection previews are rendered at the crop
+pixel size needed by the current terminal area; `render.selection_image_max_pixels`
+only limits PNGs copied with `Y`.
 
 ## Page And Slice Cache
 

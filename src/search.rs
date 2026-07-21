@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use tokio::{fs as async_fs, process::Command};
 use unicode_width::UnicodeWidthStr;
 
-use crate::{cache, pdf::PageImage};
+use crate::{cache, pdf::PageImage, selection::PdfSelection};
 
 const MAX_SEARCH_RESULTS: usize = 2000;
 
@@ -196,6 +196,37 @@ impl PdfSearchIndex {
       }
     }
     matches
+  }
+
+  pub fn text_in_selection(&self, selection: PdfSelection) -> String {
+    let mut lines = Vec::new();
+    for line in &self.lines {
+      if line.page_index != selection.page_index {
+        continue;
+      }
+      let rect = scale_selection_rect_to_line(selection, line);
+      let words = line
+        .words
+        .iter()
+        .filter(|word| rects_intersect(word.rect, rect))
+        .map(|word| word.text.as_str())
+        .collect::<Vec<_>>();
+      if !words.is_empty() {
+        lines.push(words.join(" "));
+      }
+    }
+    lines.join("\n")
+  }
+}
+
+fn scale_selection_rect_to_line(selection: PdfSelection, line: &SearchLine) -> SearchRect {
+  let x_scale = line.page_width.max(1.0) / selection.page_width.max(1.0);
+  let y_scale = line.page_height.max(1.0) / selection.page_height.max(1.0);
+  SearchRect {
+    x_min: selection.rect.x_min * x_scale,
+    y_min: selection.rect.y_min * y_scale,
+    x_max: selection.rect.x_max * x_scale,
+    y_max: selection.rect.y_max * y_scale,
   }
 }
 
@@ -480,6 +511,10 @@ fn union_rect(left: SearchRect, right: SearchRect) -> SearchRect {
     x_max: left.x_max.max(right.x_max),
     y_max: left.y_max.max(right.y_max),
   }
+}
+
+fn rects_intersect(a: SearchRect, b: SearchRect) -> bool {
+  a.x_min < b.x_max && b.x_min < a.x_max && a.y_min < b.y_max && b.y_min < a.y_max
 }
 
 fn partial_word_rect(word: &SearchWord, local_start: usize, local_end: usize) -> SearchRect {

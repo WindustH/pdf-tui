@@ -3,6 +3,9 @@ mod input;
 mod navigation;
 mod progress;
 mod search_state;
+mod selection_state;
+
+use std::collections::{HashMap, HashSet};
 
 use framework_tui::{
   CommandCompletion, CommandState, KeyBindings, KeyContext, KeyDispatcher, KeyHelpEntry, KeyHint,
@@ -14,11 +17,12 @@ use tokio::{sync::mpsc, time::sleep};
 use crate::{
   bookmarks::{self, BookmarkEdit, PdfBookmark},
   config::{EffectiveLayoutConfig, Settings},
-  event::AsyncEvent,
+  event::{AsyncEvent, SelectionImageOutcome},
   layout::ScrollLayout,
   metadata::{self, MetadataEdit, PdfMetadataEntry},
   pdf::{PageImage, PageSliceSpec, PdfDocument},
   search::{PdfSearchIndex, PdfSearchMatch},
+  selection::{PdfRect, PdfSelection, SelectionAnchor},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,7 @@ pub enum ViewMode {
   Metadata,
   Bookmarks,
   Search,
+  Selection,
 }
 
 #[derive(Debug, Clone)]
@@ -56,16 +61,27 @@ pub enum ConfirmDialog {
   BookmarksWrite { edit: BookmarkEdit },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionDisplay {
+  pub selection_index: usize,
+  pub page_index: usize,
+  pub page_width: f64,
+  pub page_height: f64,
+  pub rect: PdfRect,
+  pub area: Rect,
+}
+
 pub struct App {
   pub document: PdfDocument,
   pub settings: Settings,
   pub keymap: KeyBindings,
   pub bookmarks_keymap: KeyBindings,
   pub search_keymap: KeyBindings,
+  pub selection_keymap: KeyBindings,
   pub pages: Vec<Option<PageImage>>,
-  pub slices: std::collections::HashMap<PageSliceSpec, PageImage>,
+  pub slices: HashMap<PageSliceSpec, PageImage>,
   pub page_errors: Vec<Option<String>>,
-  pub slice_errors: std::collections::HashMap<PageSliceSpec, String>,
+  pub slice_errors: HashMap<PageSliceSpec, String>,
   pub layout: EffectiveLayoutConfig,
   pub scroll: u32,
   pub grid_start_page: usize,
@@ -81,7 +97,7 @@ pub struct App {
   pub metadata_scroll: u16,
   pub bookmarks: Vec<PdfBookmark>,
   pub bookmarks_error: Option<String>,
-  pub bookmarks_expanded: std::collections::HashSet<usize>,
+  pub bookmarks_expanded: HashSet<usize>,
   pub bookmarks_selected: Option<usize>,
   pub bookmarks_scroll: u16,
   pub bookmarks_all_expanded: bool,
@@ -99,6 +115,17 @@ pub struct App {
   search_preload_generation: u64,
   search_preload_ready_generation: u64,
   search_preload_reset_pending: bool,
+  pub selection_anchor: Option<SelectionAnchor>,
+  pub selection_second_anchor: Option<SelectionAnchor>,
+  selection_draft_index: Option<usize>,
+  pub selection_display: Option<SelectionDisplay>,
+  pub selection_images: HashMap<String, PageImage>,
+  pub selection_image_errors: HashMap<String, String>,
+  selection_image_in_flight: HashSet<String>,
+  pub selections: Vec<PdfSelection>,
+  pub selection_index: Option<usize>,
+  selection_copy_text_pending: bool,
+  selection_copy_image_pending: bool,
   pub confirm: Option<ConfirmDialog>,
   pub key_help: bool,
   pub message: String,
@@ -132,6 +159,12 @@ struct InputRedrawState {
   search_scroll: u16,
   search_index_loading: bool,
   search_index_error: Option<String>,
+  selection_anchor_active: bool,
+  selection_anchor_state: Option<String>,
+  selections_len: usize,
+  selection_index: Option<usize>,
+  selection_copy_text_pending: bool,
+  selection_copy_image_pending: bool,
   confirm: bool,
   key_help: bool,
   editor_request: bool,
@@ -162,6 +195,7 @@ impl App {
     let keymap = settings.keymap.bindings();
     let bookmarks_keymap = settings.keymap.bookmarks_bindings();
     let search_keymap = settings.keymap.search_bindings();
+    let selection_keymap = settings.keymap.selection_bindings();
     let layout = settings.config.layout.effective();
     let page_count = document.page_count;
     let (metadata, metadata_error) = match metadata::read_pdf_metadata(&document.path) {
@@ -186,10 +220,11 @@ impl App {
       keymap,
       bookmarks_keymap,
       search_keymap,
+      selection_keymap,
       pages: vec![None; page_count],
-      slices: std::collections::HashMap::new(),
+      slices: HashMap::new(),
       page_errors: vec![None; page_count],
-      slice_errors: std::collections::HashMap::new(),
+      slice_errors: HashMap::new(),
       layout,
       scroll: 0,
       grid_start_page: 0,
@@ -205,7 +240,7 @@ impl App {
       metadata_scroll: 0,
       bookmarks,
       bookmarks_error,
-      bookmarks_expanded: std::collections::HashSet::new(),
+      bookmarks_expanded: HashSet::new(),
       bookmarks_selected: None,
       bookmarks_scroll: 0,
       bookmarks_all_expanded: false,
@@ -223,6 +258,17 @@ impl App {
       search_preload_generation: 0,
       search_preload_ready_generation: 0,
       search_preload_reset_pending: false,
+      selection_anchor: None,
+      selection_second_anchor: None,
+      selection_draft_index: None,
+      selection_display: None,
+      selection_images: HashMap::new(),
+      selection_image_errors: HashMap::new(),
+      selection_image_in_flight: HashSet::new(),
+      selections: Vec::new(),
+      selection_index: None,
+      selection_copy_text_pending: false,
+      selection_copy_image_pending: false,
       confirm: None,
       key_help: false,
       message: "ready".to_string(),
@@ -317,6 +363,7 @@ impl App {
       ViewMode::Viewer => behavior.frame_sync_navigation_viewer,
       ViewMode::Bookmarks => behavior.frame_sync_navigation_bookmarks,
       ViewMode::Search => behavior.frame_sync_navigation_search,
+      ViewMode::Selection => false,
       ViewMode::Metadata => false,
     }
   }
@@ -330,6 +377,9 @@ impl App {
     self.slices.clear();
     self.page_errors.fill(None);
     self.slice_errors.clear();
+    self.selection_images.clear();
+    self.selection_image_errors.clear();
+    self.selection_image_in_flight.clear();
     self.lock_frame_navigation_if_enabled();
   }
 
@@ -380,6 +430,17 @@ impl App {
     self.search_results.clear();
     self.search_selected = None;
     self.search_scroll = 0;
+    self.selection_anchor = None;
+    self.selection_second_anchor = None;
+    self.selection_draft_index = None;
+    self.selection_display = None;
+    self.selection_images.clear();
+    self.selection_image_errors.clear();
+    self.selection_image_in_flight.clear();
+    self.selections.clear();
+    self.selection_index = None;
+    self.selection_copy_text_pending = false;
+    self.selection_copy_image_pending = false;
     self.metadata_scroll = 0;
     if let Some(progress) = progress {
       self.set_progress_target(progress);
@@ -469,6 +530,7 @@ impl App {
       ViewMode::Metadata => "Metadata key bindings",
       ViewMode::Bookmarks => "Bookmark key bindings",
       ViewMode::Search => "Search key bindings",
+      ViewMode::Selection => "Selection key bindings",
     }
   }
 
@@ -493,6 +555,12 @@ impl App {
         .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
     }
 
+    if self.view == ViewMode::Selection {
+      return self
+        .selection_keymap
+        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+    }
+
     self
       .keymap
       .help_entries_filtered(self.key_context(), |action| self.action_available(action))
@@ -504,6 +572,7 @@ impl App {
       ViewMode::Metadata => KeyContext::Detail,
       ViewMode::Bookmarks => KeyContext::Browser,
       ViewMode::Search => KeyContext::Browser,
+      ViewMode::Selection => KeyContext::Browser,
     }
   }
 
@@ -516,10 +585,15 @@ impl App {
       "clear-cache" | "clear_cache" | "refresh" => true,
       "back" => matches!(
         self.view,
-        ViewMode::Metadata | ViewMode::Bookmarks | ViewMode::Search
+        ViewMode::Metadata | ViewMode::Bookmarks | ViewMode::Search | ViewMode::Selection
       ),
       "scroll_down" | "scroll_up" | "page_down" | "page_up" | "next_page" | "previous_page"
-      | "home" | "end" | "metadata" | "bookmarks" | "search" => self.view == ViewMode::Viewer,
+      | "home" | "end" | "metadata" | "bookmarks" | "search" | "selection" => {
+        self.view == ViewMode::Viewer
+      }
+      "selection_mark" | "selection_cancel" => {
+        matches!(self.view, ViewMode::Viewer | ViewMode::Selection)
+      }
       "edit_metadata"
       | "metadata_scroll_down"
       | "metadata_scroll_up"
@@ -538,6 +612,11 @@ impl App {
       "search_next" | "search_previous" | "search_page_down" | "search_page_up" | "search_open" => {
         self.view == ViewMode::Search
       }
+      "selection_next"
+      | "selection_previous"
+      | "selection_reselect"
+      | "selection_copy_text"
+      | "selection_copy_image" => self.view == ViewMode::Selection,
       _ => false,
     }
   }
@@ -572,6 +651,25 @@ impl App {
           spec.slice_index + 1,
           spec.slice_count
         ));
+      }
+    }
+  }
+
+  pub fn finish_selection_image(&mut self, outcome: SelectionImageOutcome) {
+    self.selection_image_in_flight.remove(&outcome.key);
+    match outcome.result {
+      Ok(image) => {
+        self.selection_image_errors.remove(&outcome.key);
+        self.selection_images.insert(outcome.key, image);
+      }
+      Err(error) => {
+        self.selection_images.remove(&outcome.key);
+        self
+          .selection_image_errors
+          .insert(outcome.key.clone(), error.clone());
+        if !outcome.preload {
+          self.set_message(format!("selection image failed: {error}"));
+        }
       }
     }
   }

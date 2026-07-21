@@ -23,6 +23,8 @@ pub enum AsyncEvent {
   BookmarksWrite(BookmarksWriteOutcome),
   SearchIndex(SearchIndexOutcome),
   SearchPreloadReady { generation: u64 },
+  SelectionImage(SelectionImageOutcome),
+  Clipboard(ClipboardOutcome),
 }
 
 #[derive(Debug)]
@@ -59,6 +61,27 @@ pub struct SearchIndexOutcome {
 #[derive(Debug)]
 pub struct CacheClearOutcome {
   pub result: Result<CacheCleanupReport, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardKind {
+  SelectionText,
+  SelectionImage,
+}
+
+#[derive(Debug)]
+pub struct ClipboardOutcome {
+  pub kind: ClipboardKind,
+  pub result: Result<String, String>,
+}
+
+#[derive(Debug)]
+pub struct SelectionImageOutcome {
+  pub source_size_bytes: u64,
+  pub source_modified_nanos: u128,
+  pub key: String,
+  pub preload: bool,
+  pub result: Result<PageImage, String>,
 }
 
 #[derive(Debug)]

@@ -45,6 +45,8 @@ pub struct RenderConfig {
   pub compressed_memory_cache_max_bytes: u64,
   pub prepared_memory_cache_max_bytes: u64,
   pub search_highlight_cache_max_bytes: u64,
+  pub selection_cache_max_bytes: u64,
+  pub selection_image_max_pixels: u64,
   pub search_preload_idle_ms: u64,
   pub max_concurrent: usize,
   pub chafa_threads: usize,
@@ -90,6 +92,8 @@ impl Default for RenderConfig {
       compressed_memory_cache_max_bytes: 128 * 1024 * 1024,
       prepared_memory_cache_max_bytes: 128 * 1024 * 1024,
       search_highlight_cache_max_bytes: 64 * 1024 * 1024,
+      selection_cache_max_bytes: 64 * 1024 * 1024,
+      selection_image_max_pixels: 4 * 1024 * 1024,
       search_preload_idle_ms: 500,
       max_concurrent: 4,
       chafa_threads: 1,
@@ -132,5 +136,7 @@ impl RenderConfig {
     self.compressed_memory_cache_max_bytes = self.compressed_memory_cache_max_bytes.max(1);
     self.prepared_memory_cache_max_bytes = self.prepared_memory_cache_max_bytes.max(1);
     self.search_highlight_cache_max_bytes = self.search_highlight_cache_max_bytes.max(1);
+    self.selection_cache_max_bytes = self.selection_cache_max_bytes.max(1);
+    self.selection_image_max_pixels = self.selection_image_max_pixels.max(1);
   }
 }
