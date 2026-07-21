@@ -1,6 +1,8 @@
 # pdf-tui
 
-`pdf-tui` is a terminal PDF reader.
+`pdf-tui` is a terminal PDF reader built with rataui.
+
+![pdf-tui_demo](https://github.com/user-attachments/assets/bad500d9-49e9-4634-b381-4949f8f0a255)
 
 Runtime dependencies:
 
