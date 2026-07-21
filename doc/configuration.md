@@ -6,8 +6,16 @@ Default configuration files are created on first run:
 - `~/.config/pdf-tui/keymap.toml`
 - `~/.config/pdf-tui/theme.toml`
 
+Generated `config.toml` files include comments for the available options. When
+new fields are added later, `pdf-tui` writes the missing defaults back using the
+same commented format; repeated preset fields share one explanation instead of
+duplicating the same comment for every preset.
+
 When existing configuration files are missing fields introduced by a newer
 version, `pdf-tui` normalizes them and writes the parsed defaults back.
+If a configuration file cannot be parsed or the active layout is no longer
+compatible, `pdf-tui` backs it up as `*.bak.<timestamp>` and writes a fresh
+default file.
 
 ## `config.toml`
 
@@ -31,12 +39,20 @@ Layout has one active preset plus shared style fields:
 Default presets:
 
 ```toml
+[layout]
+active = "scroll"
+active_args = ["2", "3"]
+gap_x = 2
+gap_y = 1
+show_border = false
+padding = 0
+
 [layout.presets.scroll]
 strategy = "scroll"
 params = ["columns", "scroll_divisor"]
 columns = 1
 rows = 1
-scroll_divisor = 3
+scroll_divisor = 1
 show_border = false
 padding = 0
 
@@ -45,9 +61,9 @@ strategy = "grid"
 params = ["rows", "columns"]
 columns = 2
 rows = 2
-scroll_divisor = 3
-show_border = true
-padding = 1
+scroll_divisor = 1
+show_border = false
+padding = 0
 ```
 
 Supported preset fields:

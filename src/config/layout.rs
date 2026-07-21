@@ -58,7 +58,7 @@ impl LayoutPresetConfig {
       params: vec!["columns".to_string(), "scroll_divisor".to_string()],
       columns: 1,
       rows: 1,
-      scroll_divisor: 3,
+      scroll_divisor: 1,
       show_border: Some(false),
       padding: Some(0),
       ..Self::default()
@@ -71,9 +71,9 @@ impl LayoutPresetConfig {
       params: vec!["rows".to_string(), "columns".to_string()],
       columns: 2,
       rows: 2,
-      scroll_divisor: 3,
-      show_border: Some(true),
-      padding: Some(1),
+      scroll_divisor: 1,
+      show_border: Some(false),
+      padding: Some(0),
       ..Self::default()
     }
   }
@@ -147,6 +147,11 @@ impl LayoutConfig {
     self
       .effective_for(&self.active, &self.active_args)
       .unwrap_or_else(|_| default_effective_layout(self))
+  }
+
+  pub(super) fn validate(&self) -> Result<(), String> {
+    self.effective_for(&self.active, &self.active_args)?;
+    Ok(())
   }
 
   pub fn set_active_from_args(
@@ -353,7 +358,7 @@ fn default_layout_active() -> String {
 }
 
 fn default_layout_active_args() -> Vec<String> {
-  vec!["1".to_string(), "3".to_string()]
+  vec!["2".to_string(), "3".to_string()]
 }
 
 fn default_gap_x() -> u16 {
@@ -365,11 +370,11 @@ fn default_gap_y() -> u16 {
 }
 
 fn default_show_border() -> bool {
-  true
+  false
 }
 
 fn default_padding() -> u16 {
-  1
+  0
 }
 
 fn default_layout_strategy() -> String {
