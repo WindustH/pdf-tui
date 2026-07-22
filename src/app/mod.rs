@@ -71,6 +71,13 @@ pub struct SelectionDisplay {
   pub area: Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectionMousePress {
+  column: u16,
+  row: u16,
+  saw_drag: bool,
+}
+
 pub struct App {
   pub document: PdfDocument,
   pub settings: Settings,
@@ -117,6 +124,7 @@ pub struct App {
   search_preload_reset_pending: bool,
   pub selection_anchor: Option<SelectionAnchor>,
   pub selection_second_anchor: Option<SelectionAnchor>,
+  selection_mouse_press: Option<SelectionMousePress>,
   selection_draft_index: Option<usize>,
   pub selection_display: Option<SelectionDisplay>,
   pub selection_images: HashMap<String, PageImage>,
@@ -260,6 +268,7 @@ impl App {
       search_preload_reset_pending: false,
       selection_anchor: None,
       selection_second_anchor: None,
+      selection_mouse_press: None,
       selection_draft_index: None,
       selection_display: None,
       selection_images: HashMap::new(),
@@ -432,6 +441,7 @@ impl App {
     self.search_scroll = 0;
     self.selection_anchor = None;
     self.selection_second_anchor = None;
+    self.selection_mouse_press = None;
     self.selection_draft_index = None;
     self.selection_display = None;
     self.selection_images.clear();

@@ -22,7 +22,8 @@ view. Input actions are active while the command prompt is open.
 - `b`: open PDF bookmarks
 - `s`: search embedded PDF text
 - `v`: open selection history
-- mouse left release: mark or adjust a PDF selection corner
+- mouse left press: mark the first PDF selection corner
+- mouse left drag release: mark the opposite corner
 - `esc`: cancel an active selection anchor
 - `L s`: switch to the default scroll layout
 - `L g`: switch to the default grid layout
@@ -75,7 +76,8 @@ view. Input actions are active while the command prompt is open.
 - `q`, `esc`: return to the viewer
 - `f1`: show selection key bindings
 - `v`: commit a child selection draft, or prepare to create one
-- mouse left release: create or adjust a child selection inside the current selection
+- mouse left press: mark the first child-selection corner
+- mouse left drag release: mark the opposite child-selection corner
 - `j`, `down`, `pgdn`: move to the next session selection
 - `k`, `up`, `pgup`: move to the previous session selection
 - `y`: copy embedded text inside the selection

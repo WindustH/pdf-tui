@@ -69,6 +69,17 @@ impl App {
         MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Search => {
           self.handle_search_mouse_click(mouse)
         }
+        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Viewer => {
+          self.handle_viewer_mouse_left_down(mouse)
+        }
+        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Selection => {
+          self.handle_selection_mouse_left_down(mouse)
+        }
+        MouseEventKind::Drag(MouseButton::Left)
+          if matches!(self.view, ViewMode::Viewer | ViewMode::Selection) =>
+        {
+          self.handle_selection_mouse_drag(mouse)
+        }
         MouseEventKind::Up(MouseButton::Left) if self.view == ViewMode::Viewer => {
           self.handle_viewer_mouse_left(mouse, tx)
         }
@@ -338,16 +349,45 @@ impl App {
     }
   }
 
+  fn handle_viewer_mouse_left_down(&mut self, mouse: MouseEvent) {
+    match self
+      .keymap
+      .match_sequence(self.key_context(), &[String::from("mouse_left")])
+    {
+      MatchResult::Action(action) if action == "selection_mark" => {
+        self.begin_selection_mouse_press(mouse)
+      }
+      _ => {}
+    }
+  }
+
+  fn handle_selection_mouse_left_down(&mut self, mouse: MouseEvent) {
+    match self
+      .selection_keymap
+      .match_sequence(self.key_context(), &[String::from("mouse_left")])
+    {
+      MatchResult::Action(action) if action == "selection_mark" => {
+        self.begin_selection_mouse_press(mouse)
+      }
+      _ => {}
+    }
+  }
+
   fn handle_viewer_mouse_left(
     &mut self,
     mouse: MouseEvent,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
+    if self.finish_selection_mouse_press(mouse, tx) {
+      return;
+    }
     match self
       .key_dispatcher
       .dispatch(&self.keymap, self.key_context(), "mouse_left")
     {
-      MatchResult::Action(action) if action == "selection_mark" => {
+      MatchResult::Action(action)
+        if action == "selection_mark" && self.selection_anchor.is_some() =>
+      {
         self.handle_selection_mouse_click(mouse, tx)
       }
       MatchResult::Action(action) => self.handle_action(&action, tx),
@@ -360,11 +400,16 @@ impl App {
     mouse: MouseEvent,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
+    if self.finish_selection_mouse_press(mouse, tx) {
+      return;
+    }
     match self
       .key_dispatcher
       .dispatch(&self.selection_keymap, self.key_context(), "mouse_left")
     {
-      MatchResult::Action(action) if action == "selection_mark" => {
+      MatchResult::Action(action)
+        if action == "selection_mark" && self.selection_anchor.is_some() =>
+      {
         self.handle_selection_mouse_click(mouse, tx)
       }
       MatchResult::Action(action) => self.handle_action(&action, tx),
@@ -783,6 +828,7 @@ impl App {
     self.metadata_scroll = 0;
     self.selection_anchor = None;
     self.selection_second_anchor = None;
+    self.selection_mouse_press = None;
     self.selection_draft_index = None;
     self.selection_display = None;
     self.key_dispatcher.clear();

@@ -105,19 +105,21 @@ native terminal image protocols as well as Chafa fallback rendering.
 The viewer can create rectangular selections with the configured
 `selection_mark` action. By default this is `mouse_left`.
 
-The first click must be on a visible PDF page. `pdf-tui` inverts the terminal
-cell under the pointer with a small centered crosshair marker. Mouse drags do
-not update the selection continuously; the mark is processed on mouse release.
-The anchor position is stored as the page coordinate under the mouse event; the
-terminal cell size only controls the marker size. Terminal mouse input is
-cell-based, so this coordinate is the center of the reported terminal cell.
-Press `esc` to cancel active anchors.
+The first press must be on a visible PDF page. `pdf-tui` immediately inverts the
+terminal cell under the pointer with a small centered crosshair marker. A plain
+click leaves only this first anchor. If the pointer is dragged before release,
+the release position places the opposite anchor and creates a selection draft;
+drag motion does not update the selection continuously. The anchor position is
+stored as the page coordinate under the mouse event; the terminal cell size only
+controls the marker size. Terminal mouse input is cell-based, so this coordinate
+is the center of the reported terminal cell. Press `esc` to cancel active
+anchors.
 
-The second click places the opposite anchor and creates a selection draft, but
-does not immediately switch views. Once both anchors exist, the rectangle
-defined by their page-coordinate points is drawn with an inverted outline.
-Later clicks move whichever anchor is closer to the new pointer position. If
-the pointer is outside the anchor page, the endpoint is derived from the
+The second click also places the opposite anchor and creates a selection draft,
+but does not immediately switch views. Once both anchors exist, the rectangle
+defined by their page-coordinate points is drawn with an inverted outline. Later
+clicks move whichever anchor is closer to the new pointer position. If the
+pointer is outside the anchor page, the endpoint is derived from the
 intersection between the page region and the rectangle formed with the fixed
 opposite anchor.
 

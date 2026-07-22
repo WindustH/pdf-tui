@@ -9,7 +9,7 @@ use crate::{
   selection::{self, PdfPoint, PdfRect, PdfSelection, SelectionAnchor},
 };
 
-use super::{App, SelectionDisplay, ViewMode};
+use super::{App, SelectionDisplay, SelectionMousePress, ViewMode};
 
 #[derive(Debug, Clone, Copy)]
 struct SelectionHit {
@@ -109,6 +109,56 @@ impl App {
     self.upsert_selection_draft(selection_bounds);
   }
 
+  pub(super) fn begin_selection_mouse_press(&mut self, mouse: MouseEvent) {
+    self.selection_mouse_press = None;
+    if self.selection_anchor.is_some() || self.selection_second_anchor.is_some() {
+      return;
+    }
+    let Some(hit) = self.selection_hit_for_current_view(mouse.column, mouse.row, false) else {
+      return;
+    };
+    self.selection_anchor = Some(SelectionAnchor {
+      page_index: hit.page_index,
+      page_width: hit.page_width,
+      page_height: hit.page_height,
+      point: hit.point,
+      marker: hit.cell_rect,
+    });
+    self.selection_mouse_press = Some(SelectionMousePress {
+      column: mouse.column,
+      row: mouse.row,
+      saw_drag: false,
+    });
+    self.key_dispatcher.clear();
+    self.set_message(format!("selection anchor: page {}", hit.page_index + 1));
+  }
+
+  pub(super) fn handle_selection_mouse_drag(&mut self, mouse: MouseEvent) {
+    if let Some(press) = &mut self.selection_mouse_press
+      && (press.column != mouse.column || press.row != mouse.row)
+    {
+      press.saw_drag = true;
+    }
+  }
+
+  pub(super) fn finish_selection_mouse_press(
+    &mut self,
+    mouse: MouseEvent,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ) -> bool {
+    let Some(press) = self.selection_mouse_press.take() else {
+      return false;
+    };
+    if self.selection_anchor.is_none() {
+      return true;
+    }
+    let moved = press.saw_drag || press.column != mouse.column || press.row != mouse.row;
+    if moved {
+      self.handle_selection_mouse_click(mouse, tx);
+    }
+    true
+  }
+
   pub(super) fn cancel_selection_anchor(&mut self) {
     if self.selection_anchor.is_none() && self.selection_second_anchor.is_none() {
       return;
@@ -116,6 +166,7 @@ impl App {
     self.remove_selection_draft();
     self.selection_anchor = None;
     self.selection_second_anchor = None;
+    self.selection_mouse_press = None;
     self.key_dispatcher.clear();
     self.set_message("selection cancelled");
   }
@@ -637,6 +688,7 @@ impl App {
     };
     self.selection_anchor = None;
     self.selection_second_anchor = None;
+    self.selection_mouse_press = None;
     committed
   }
 
