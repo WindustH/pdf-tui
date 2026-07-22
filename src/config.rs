@@ -32,22 +32,12 @@ pub struct Settings {
   pub cache_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AppConfig {
   pub layout: LayoutConfig,
   pub render: RenderConfig,
   pub behavior: BehaviorConfig,
-}
-
-impl Default for AppConfig {
-  fn default() -> Self {
-    Self {
-      layout: LayoutConfig::default(),
-      render: RenderConfig::default(),
-      behavior: BehaviorConfig::default(),
-    }
-  }
 }
 
 impl AppConfig {
@@ -145,17 +135,17 @@ fn add_app_config_comments(
     if let Some(header) = toml_table_header(trimmed) {
       table = header.to_string();
       let comment_key = comment_table_key(&table);
-      if seen_comments.insert(comment_key.clone()) {
-        if let Some(comment) = comment_for(&comment_key) {
-          push_toml_comment(&mut out, comment);
-        }
+      if seen_comments.insert(comment_key.clone())
+        && let Some(comment) = comment_for(&comment_key)
+      {
+        push_toml_comment(&mut out, comment);
       }
     } else if let Some(key) = toml_field_key(trimmed) {
       let comment_key = comment_field_key(&table, key);
-      if seen_comments.insert(comment_key.clone()) {
-        if let Some(comment) = comment_for(&comment_key) {
-          push_toml_comment(&mut out, comment);
-        }
+      if seen_comments.insert(comment_key.clone())
+        && let Some(comment) = comment_for(&comment_key)
+      {
+        push_toml_comment(&mut out, comment);
       }
     }
     out.push_str(line);

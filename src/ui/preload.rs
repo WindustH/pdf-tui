@@ -88,35 +88,45 @@ pub(super) fn preload_scroll_neighbors(
 
   preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &ahead_rows);
   preload_scroll_next_pages(app, pages, tx, area, scroll_layout, visible_rows);
-  for (distance, index) in ahead_rows.iter().enumerate() {
-    preload_scroll_row(
+  {
+    let mut ctx = ScrollPreloadContext {
       app,
       pages,
       renderer,
       tx,
       area,
       scroll_layout,
-      *index,
-      distance < slice_ahead,
-      distance < terminal_ahead,
-      &mut slice_groups,
-    );
+      slice_groups: &mut slice_groups,
+    };
+    for (distance, index) in ahead_rows.iter().enumerate() {
+      preload_scroll_row(
+        &mut ctx,
+        *index,
+        distance < slice_ahead,
+        distance < terminal_ahead,
+      );
+    }
   }
 
   preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &behind_rows);
-  for (distance, index) in behind_rows.iter().enumerate() {
-    preload_scroll_row(
+  {
+    let mut ctx = ScrollPreloadContext {
       app,
       pages,
       renderer,
       tx,
       area,
       scroll_layout,
-      *index,
-      distance < slice_behind,
-      distance < terminal_behind,
-      &mut slice_groups,
-    );
+      slice_groups: &mut slice_groups,
+    };
+    for (distance, index) in behind_rows.iter().enumerate() {
+      preload_scroll_row(
+        &mut ctx,
+        *index,
+        distance < slice_behind,
+        distance < terminal_behind,
+      );
+    }
   }
 }
 
@@ -246,28 +256,33 @@ fn preload_scroll_page(
   pages.preload(spec.page_index, spec.target_width, spec.target_height, tx);
 }
 
-fn preload_scroll_row(
-  app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+struct ScrollPreloadContext<'a> {
+  app: &'a App,
+  pages: &'a mut PageStore,
+  renderer: &'a mut RenderStore,
+  tx: &'a mpsc::UnboundedSender<AsyncEvent>,
   area: Rect,
-  scroll_layout: &layout::ScrollLayout,
+  scroll_layout: &'a layout::ScrollLayout,
+  slice_groups: &'a mut HashSet<SlicePreloadGroup>,
+}
+
+fn preload_scroll_row(
+  ctx: &mut ScrollPreloadContext<'_>,
   row_index: usize,
   preload_slice: bool,
   preload_terminal: bool,
-  slice_groups: &mut HashSet<SlicePreloadGroup>,
 ) {
-  let Some(row) = scroll_layout.rows.get(row_index) else {
+  let Some(row) = ctx.scroll_layout.rows.get(row_index) else {
     return;
   };
   for item_index in &row.items {
-    let Some(item) = scroll_layout.items.get(*item_index).copied() else {
+    let Some(item) = ctx.scroll_layout.items.get(*item_index).copied() else {
       continue;
     };
-    let spec = slice_spec_for_item(app, item, area);
-    let slice_ready = app.slices.contains_key(&spec);
-    let page_ready = app
+    let spec = slice_spec_for_item(ctx.app, item, ctx.area);
+    let slice_ready = ctx.app.slices.contains_key(&spec);
+    let page_ready = ctx
+      .app
       .pages
       .get(spec.page_index)
       .and_then(|page| page.as_ref())
@@ -275,12 +290,14 @@ fn preload_scroll_row(
     if preload_slice
       && page_ready
       && !slice_ready
-      && slice_groups.insert(SlicePreloadGroup::from_spec(spec))
+      && ctx.slice_groups.insert(SlicePreloadGroup::from_spec(spec))
     {
-      pages.preload_slice(spec, tx);
+      ctx.pages.preload_slice(spec, ctx.tx);
     }
-    if preload_terminal && let Some(slice) = app.slices.get(&spec) {
-      renderer.preload(slice, item.width, item.height, RenderKind::Fit, tx);
+    if preload_terminal && let Some(slice) = ctx.app.slices.get(&spec) {
+      ctx
+        .renderer
+        .preload(slice, item.width, item.height, RenderKind::Fit, ctx.tx);
     }
   }
 }
@@ -604,7 +621,7 @@ fn preload_selection_preview(
     return;
   }
   renderer.preload(
-    &crop,
+    crop,
     image_area.width,
     image_area.height,
     RenderKind::Fit,

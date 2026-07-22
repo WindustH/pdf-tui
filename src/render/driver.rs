@@ -73,8 +73,8 @@ async fn render_or_read_cache(
     render_cache_key(page, width, height, kind, config, native_config, mode)
   ));
 
-  if let Ok(bytes) = fs::read(&cache_path).await {
-    if let Ok(decoded) = decode_cache_file(
+  if let Ok(bytes) = fs::read(&cache_path).await
+    && let Ok(decoded) = decode_cache_file(
       &bytes,
       width,
       height,
@@ -84,30 +84,29 @@ async fn render_or_read_cache(
       placement_id,
     )
     .await
-    {
-      if decoded.should_rewrite {
-        rewrite_cache_file(
-          &cache_path,
-          &decoded.payload,
-          width,
-          height,
-          native_config.cell_pixels,
-          mode,
-          image_id,
-          placement_id,
-          config,
-        )
-        .await;
-      }
-      cache::touch_cache_entry(&cache_path).await;
-      return decode_rendered(
-        decoded.payload,
+  {
+    if decoded.should_rewrite {
+      rewrite_cache_file(
+        &cache_path,
+        &decoded.payload,
+        width,
+        height,
+        native_config.cell_pixels,
         mode,
-        native_config,
-        decoded.image_id,
-        decoded.placement_id,
-      );
+        image_id,
+        placement_id,
+        config,
+      )
+      .await;
     }
+    cache::touch_cache_entry(&cache_path).await;
+    return decode_rendered(
+      decoded.payload,
+      mode,
+      native_config,
+      decoded.image_id,
+      decoded.placement_id,
+    );
   }
 
   let bytes = render_bytes(

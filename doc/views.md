@@ -100,6 +100,11 @@ shows a one-line context with the matched words highlighted. The preview uses a
 temporary highlighted PNG, so the inverted match rectangle is visible with
 native terminal image protocols as well as Chafa fallback rendering.
 
+Opening a search result jumps back to the viewer, tries to center the matched
+area in the current layout, and temporarily inverts the matched area on the
+visible page or scroll slice. The next viewer navigation operation clears that
+jump highlight and restores the normal page image.
+
 ## Selection
 
 The viewer can create rectangular selections with the configured

@@ -4,6 +4,7 @@ mod grid;
 mod metadata_view;
 mod modal;
 mod page;
+mod page_overlay;
 mod preload;
 mod scroll;
 mod search_view;
@@ -27,6 +28,35 @@ use crate::{
   terminal::FrameOutput,
 };
 
+#[derive(Default)]
+struct UiFrameState {
+  overlays: Vec<ProtocolOverlay>,
+  cursor_position: Option<(u16, u16)>,
+  frame_message: Option<String>,
+  preserve_overlays: bool,
+  preserve_areas: Vec<Rect>,
+  drawn_render_keys: Vec<String>,
+}
+
+impl UiFrameState {
+  fn clear_transient_output(&mut self) {
+    self.overlays.clear();
+    self.cursor_position = None;
+    self.preserve_overlays = false;
+    self.preserve_areas.clear();
+    self.drawn_render_keys.clear();
+  }
+}
+
+struct UiDrawContext<'a> {
+  app: &'a mut App,
+  pages: &'a mut PageStore,
+  renderer: &'a mut RenderStore,
+  tx: &'a mpsc::UnboundedSender<AsyncEvent>,
+  obscured_areas: &'a [Rect],
+  state: &'a mut UiFrameState,
+}
+
 pub fn draw(
   frame: &mut Frame,
   app: &mut App,
@@ -44,28 +74,19 @@ pub fn draw(
   let footer = chunks[1];
   let completion_overlay = footer::command_completion_overlay_area(app, main);
   let obscured_areas = completion_overlay.iter().copied().collect::<Vec<_>>();
-  let mut overlays = Vec::new();
-  let mut cursor_position = None;
-  let mut frame_message = None;
-  let mut preserve_overlays = false;
-  let mut preserve_areas = Vec::new();
-  let mut drawn_render_keys = Vec::new();
+  let mut state = UiFrameState::default();
 
-  draw_main(
-    frame,
-    app,
-    pages,
-    renderer,
-    tx,
-    main,
-    &obscured_areas,
-    &mut overlays,
-    &mut frame_message,
-    &mut preserve_overlays,
-    &mut preserve_areas,
-    &mut drawn_render_keys,
-    &mut cursor_position,
-  );
+  {
+    let mut ctx = UiDrawContext {
+      app,
+      pages,
+      renderer,
+      tx,
+      obscured_areas: &obscured_areas,
+      state: &mut state,
+    };
+    draw_main(frame, main, &mut ctx);
+  }
   if let Some(area) = completion_overlay {
     footer::draw_command_completion_overlay(frame, app, area);
   }
@@ -73,8 +94,8 @@ pub fn draw(
     frame,
     app,
     footer,
-    &mut cursor_position,
-    frame_message.as_deref(),
+    &mut state.cursor_position,
+    state.frame_message.as_deref(),
   );
   if app.confirm.is_some() {
     modal::draw_confirm(frame, app, area);
@@ -83,19 +104,15 @@ pub fn draw(
     modal::draw_key_help(frame, app, area);
   }
   if app.confirm.is_some() || app.key_help {
-    overlays.clear();
-    cursor_position = None;
-    preserve_overlays = false;
-    preserve_areas.clear();
-    drawn_render_keys.clear();
+    state.clear_transient_output();
   }
-  let protocol_writes = if preserve_overlays {
-    renderer.take_protocol_writes(&drawn_render_keys, false)
+  let protocol_writes = if state.preserve_overlays {
+    renderer.take_protocol_writes(&state.drawn_render_keys, false)
   } else {
-    for key in &drawn_render_keys {
+    for key in &state.drawn_render_keys {
       renderer.mark_drawn(key);
     }
-    renderer.take_protocol_writes(&drawn_render_keys, true)
+    renderer.take_protocol_writes(&state.drawn_render_keys, true)
   };
   let protocol_write_bytes = protocol_writes.iter().map(String::len).sum::<usize>();
   debug!(
@@ -104,23 +121,25 @@ pub fn draw(
     main_width = main.width,
     main_height = main.height,
     footer_height,
-    overlays = overlays.len(),
+    overlays = state.overlays.len(),
     protocol_writes = protocol_writes.len(),
     protocol_write_bytes,
-    preserve_overlays,
+    preserve_overlays = state.preserve_overlays,
     "frame output built"
   );
 
+  let preserve_overlays = state.preserve_overlays;
+  let preserve_areas = if preserve_overlays {
+    state.preserve_areas
+  } else {
+    Vec::new()
+  };
   FrameOutput {
-    overlays,
+    overlays: state.overlays,
     protocol_writes,
-    cursor_position,
+    cursor_position: state.cursor_position,
     preserve_overlays,
-    preserve_areas: if preserve_overlays {
-      preserve_areas
-    } else {
-      Vec::new()
-    },
+    preserve_areas,
   }
 }
 
@@ -133,22 +152,8 @@ pub fn pump_preload(
   preload::pump_preload(app, pages, renderer, tx);
 }
 
-fn draw_main(
-  frame: &mut Frame,
-  app: &mut App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
-  cursor_position: &mut Option<(u16, u16)>,
-) {
-  let theme = &app.settings.theme;
+fn draw_main(frame: &mut Frame, area: Rect, ctx: &mut UiDrawContext<'_>) {
+  let theme = &ctx.app.settings.theme;
   frame.render_widget(
     Block::default().style(
       Style::default()
@@ -158,100 +163,100 @@ fn draw_main(
     area,
   );
 
-  if app.document.page_count == 0 {
+  if ctx.app.document.page_count == 0 {
     frame.render_widget(Paragraph::new("No pages"), area);
     return;
   }
 
-  if app.view == ViewMode::Metadata {
-    metadata_view::draw_metadata(frame, app, area);
+  if ctx.app.view == ViewMode::Metadata {
+    metadata_view::draw_metadata(frame, ctx.app, area);
     return;
   }
 
-  if app.view == ViewMode::Bookmarks {
+  if ctx.app.view == ViewMode::Bookmarks {
     bookmarks_view::draw_bookmarks(
       frame,
-      app,
-      pages,
-      renderer,
-      tx,
+      ctx.app,
+      ctx.pages,
+      ctx.renderer,
+      ctx.tx,
       area,
-      obscured_areas,
-      overlays,
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-      drawn_render_keys,
+      ctx.obscured_areas,
+      &mut ctx.state.overlays,
+      &mut ctx.state.frame_message,
+      &mut ctx.state.preserve_overlays,
+      &mut ctx.state.preserve_areas,
+      &mut ctx.state.drawn_render_keys,
     );
     return;
   }
 
-  if app.view == ViewMode::Search {
+  if ctx.app.view == ViewMode::Search {
     search_view::draw_search(
       frame,
-      app,
-      pages,
-      renderer,
-      tx,
+      ctx.app,
+      ctx.pages,
+      ctx.renderer,
+      ctx.tx,
       area,
-      obscured_areas,
-      overlays,
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-      drawn_render_keys,
-      cursor_position,
+      ctx.obscured_areas,
+      &mut ctx.state.overlays,
+      &mut ctx.state.frame_message,
+      &mut ctx.state.preserve_overlays,
+      &mut ctx.state.preserve_areas,
+      &mut ctx.state.drawn_render_keys,
+      &mut ctx.state.cursor_position,
     );
     return;
   }
 
-  if app.view == ViewMode::Selection {
+  if ctx.app.view == ViewMode::Selection {
     selection_view::draw_selection(
       frame,
-      app,
-      pages,
-      renderer,
-      tx,
+      ctx.app,
+      ctx.pages,
+      ctx.renderer,
+      ctx.tx,
       area,
-      obscured_areas,
-      overlays,
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-      drawn_render_keys,
+      ctx.obscured_areas,
+      &mut ctx.state.overlays,
+      &mut ctx.state.frame_message,
+      &mut ctx.state.preserve_overlays,
+      &mut ctx.state.preserve_areas,
+      &mut ctx.state.drawn_render_keys,
     );
     return;
   }
 
-  if app.layout.is_scroll() {
+  if ctx.app.layout.is_scroll() {
     scroll::draw_scroll(
       frame,
-      app,
-      pages,
-      renderer,
-      tx,
+      ctx.app,
+      ctx.pages,
+      ctx.renderer,
+      ctx.tx,
       area,
-      obscured_areas,
-      overlays,
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-      drawn_render_keys,
+      ctx.obscured_areas,
+      &mut ctx.state.overlays,
+      &mut ctx.state.frame_message,
+      &mut ctx.state.preserve_overlays,
+      &mut ctx.state.preserve_areas,
+      &mut ctx.state.drawn_render_keys,
     );
   } else {
     grid::draw_grid(
       frame,
-      app,
-      pages,
-      renderer,
-      tx,
+      ctx.app,
+      ctx.pages,
+      ctx.renderer,
+      ctx.tx,
       area,
-      obscured_areas,
-      overlays,
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-      drawn_render_keys,
+      ctx.obscured_areas,
+      &mut ctx.state.overlays,
+      &mut ctx.state.frame_message,
+      &mut ctx.state.preserve_overlays,
+      &mut ctx.state.preserve_areas,
+      &mut ctx.state.drawn_render_keys,
     );
   }
 }

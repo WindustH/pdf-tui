@@ -459,14 +459,13 @@ impl RenderStore {
       self.in_flight.remove(&cache_key);
       self.visible_render_waits.remove(&cache_key);
       self.priorities.remove(&cache_key);
-      if let Some(job) = self.jobs.remove(&cache_key) {
-        if self
+      if let Some(job) = self.jobs.remove(&cache_key)
+        && self
           .in_flight_slots
           .get(&job.slot_key)
           .is_some_and(|in_flight_key| in_flight_key == &cache_key)
-        {
-          self.in_flight_slots.remove(&job.slot_key);
-        }
+      {
+        self.in_flight_slots.remove(&job.slot_key);
       }
     }
   }

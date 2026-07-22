@@ -48,6 +48,13 @@ impl App {
       .and_then(|index| self.search_results.get(index))
   }
 
+  pub fn viewer_search_highlight_for(&self, page_index: usize) -> Option<&PdfSearchMatch> {
+    self
+      .viewer_search_highlight
+      .as_ref()
+      .filter(|result| result.page_index == page_index)
+  }
+
   pub fn refresh_search_results(&mut self) {
     let previous_selected = self.search_selected;
     let previous_len = self.search_results.len();
@@ -112,15 +119,19 @@ impl App {
   }
 
   pub(super) fn search_open(&mut self) {
-    let Some(result) = self.selected_search_match() else {
+    let Some(result) = self.selected_search_match().cloned() else {
       return;
     };
-    let progress = result.page_index as f64 + result.rect.y_min / result.page_height.max(1.0);
     let page_number = result.page_index + 1;
-    self.set_progress_target(progress);
+    self.jump_to_search_match(&result);
+    self.viewer_search_highlight = Some(result);
     self.view = ViewMode::Viewer;
     self.key_dispatcher.clear();
     self.set_message(format!("jumped to search result on page {page_number}"));
+  }
+
+  pub(super) fn clear_viewer_search_highlight(&mut self) {
+    self.viewer_search_highlight = None;
   }
 
   fn select_search_delta(&mut self, delta: isize) {

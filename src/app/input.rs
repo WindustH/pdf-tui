@@ -236,6 +236,7 @@ impl App {
       search_cursor: self.search_prompt.buffer().cursor,
       search_results_len: self.search_results.len(),
       search_selected: self.search_selected,
+      viewer_search_highlight: self.viewer_search_highlight.is_some(),
       search_scroll: self.search_scroll,
       search_index_loading: self.search_index_loading,
       search_index_error: self.search_index_error.clone(),
@@ -422,7 +423,11 @@ impl App {
       return;
     }
     let before = self.frame_navigation_state();
+    let clear_search_highlight = self.view == ViewMode::Viewer;
     navigate(self);
+    if clear_search_highlight && self.view == ViewMode::Viewer {
+      self.clear_viewer_search_highlight();
+    }
     if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
     }
@@ -514,20 +519,17 @@ impl App {
   }
 
   fn handle_key_help_input(&mut self, input: Event) {
-    match input {
-      Event::Key(key) => {
-        let Some(token) = key_event_to_token(key) else {
-          return;
-        };
-        match token.as_str() {
-          "f1" | "enter" | "esc" | "q" => {
-            self.key_help = false;
-            self.set_message("closed key bindings");
-          }
-          _ => {}
+    if let Event::Key(key) = input {
+      let Some(token) = key_event_to_token(key) else {
+        return;
+      };
+      match token.as_str() {
+        "f1" | "enter" | "esc" | "q" => {
+          self.key_help = false;
+          self.set_message("closed key bindings");
         }
+        _ => {}
       }
-      _ => {}
     }
   }
 

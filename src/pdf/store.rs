@@ -300,7 +300,7 @@ impl PageStore {
         target_width = key.target_width,
         target_height = key.target_height,
         preload,
-        completed = self.completed.get(&page_index).is_some(),
+        completed = self.completed.contains_key(&page_index),
         page_count = self.document.page_count,
         "page request ignored"
       );

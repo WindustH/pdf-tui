@@ -194,16 +194,16 @@ pub async fn render_selection_preview_image(
   target_height: u32,
   cache_max_bytes: u64,
 ) -> Result<PageImage, String> {
-  render_selection_image(
+  render_selection_image(SelectionImageRenderRequest {
     document,
     selection,
     cache_dir,
     target_width,
     target_height,
-    None,
-    "preview",
+    max_pixels: None,
+    label: "preview",
     cache_max_bytes,
-  )
+  })
   .await
 }
 
@@ -215,30 +215,42 @@ pub async fn render_selection_copy_image(
   cache_max_bytes: u64,
 ) -> Result<PathBuf, String> {
   let (target_width, target_height) = selection_copy_page_target(selection, max_pixels);
-  render_selection_image(
+  render_selection_image(SelectionImageRenderRequest {
     document,
     selection,
     cache_dir,
     target_width,
     target_height,
-    Some(max_pixels),
-    "copy",
+    max_pixels: Some(max_pixels),
+    label: "copy",
     cache_max_bytes,
-  )
+  })
   .await
   .map(|image| image.path)
 }
 
-async fn render_selection_image(
+struct SelectionImageRenderRequest {
   document: PdfDocument,
   selection: PdfSelection,
   cache_dir: PathBuf,
   target_width: u32,
   target_height: u32,
   max_pixels: Option<u64>,
-  label: &str,
+  label: &'static str,
   cache_max_bytes: u64,
-) -> Result<PageImage, String> {
+}
+
+async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<PageImage, String> {
+  let SelectionImageRenderRequest {
+    document,
+    selection,
+    cache_dir,
+    target_width,
+    target_height,
+    max_pixels,
+    label,
+    cache_max_bytes,
+  } = request;
   let target_width = target_width.max(1);
   let target_height = target_height.max(1);
   let dir = cache_dir.join("selection");

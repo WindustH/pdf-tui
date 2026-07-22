@@ -2,7 +2,9 @@ mod bookmark_state;
 mod input;
 mod navigation;
 mod progress;
+mod search_jump;
 mod search_state;
+mod selection_geometry;
 mod selection_state;
 
 use std::collections::{HashMap, HashSet};
@@ -116,6 +118,7 @@ pub struct App {
   pub search_index_loading: bool,
   pub search_results: Vec<PdfSearchMatch>,
   pub search_selected: Option<usize>,
+  pub viewer_search_highlight: Option<PdfSearchMatch>,
   pub search_scroll: u16,
   pub search_left_ratio: u16,
   pub search_right_ratio: u16,
@@ -164,6 +167,7 @@ struct InputRedrawState {
   search_cursor: usize,
   search_results_len: usize,
   search_selected: Option<usize>,
+  viewer_search_highlight: bool,
   search_scroll: u16,
   search_index_loading: bool,
   search_index_error: Option<String>,
@@ -260,6 +264,7 @@ impl App {
       search_index_loading: false,
       search_results: Vec::new(),
       search_selected: None,
+      viewer_search_highlight: None,
       search_scroll: 0,
       search_left_ratio,
       search_right_ratio,
@@ -438,6 +443,7 @@ impl App {
     self.search_index_loading = false;
     self.search_results.clear();
     self.search_selected = None;
+    self.viewer_search_highlight = None;
     self.search_scroll = 0;
     self.selection_anchor = None;
     self.selection_second_anchor = None;

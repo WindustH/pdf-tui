@@ -22,6 +22,15 @@ pub(super) struct DecodedCacheFile {
   pub(super) should_rewrite: bool,
 }
 
+struct CacheFileMetadata {
+  width: u16,
+  height: u16,
+  cell_pixels: Option<(u16, u16)>,
+  mode: RenderMode,
+  image_id: Option<u32>,
+  placement_id: Option<u32>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_cache_file(
   cache_path: &Path,
@@ -41,12 +50,14 @@ pub(super) async fn write_cache_file(
   }
   let cached = encode_cache_file(
     payload,
-    width,
-    height,
-    cell_pixels,
-    mode,
-    image_id,
-    placement_id,
+    CacheFileMetadata {
+      width,
+      height,
+      cell_pixels,
+      mode,
+      image_id,
+      placement_id,
+    },
     config,
   )
   .await
@@ -86,12 +97,7 @@ pub(super) async fn rewrite_cache_file(
 
 async fn encode_cache_file(
   payload: &RenderedBytes,
-  width: u16,
-  height: u16,
-  cell_pixels: Option<(u16, u16)>,
-  mode: RenderMode,
-  image_id: Option<u32>,
-  placement_id: Option<u32>,
+  metadata: CacheFileMetadata,
   config: &RenderConfig,
 ) -> Result<Vec<u8>, String> {
   let compression_level = config.cache_compression_level;
@@ -110,15 +116,17 @@ async fn encode_cache_file(
   .map_err(|error| format!("zstd compression worker failed: {error}"))?
   .map_err(|error| format!("zstd compression failed: {error}"))?;
 
-  let (cell_width, cell_height) = cell_pixels.unwrap_or((0, 0));
+  let (cell_width, cell_height) = metadata.cell_pixels.unwrap_or((0, 0));
+  let width = metadata.width;
+  let height = metadata.height;
   let mut header = format!(
     "{CACHE_MAGIC}\nwidth={width}\nheight={height}\ncell_width={cell_width}\ncell_height={cell_height}\nmode={}\ncompression=zstd\npayload_format={payload_format}\nuncompressed_bytes={plain_len}\n",
-    mode.label()
+    metadata.mode.label()
   );
-  if let Some(image_id) = image_id {
+  if let Some(image_id) = metadata.image_id {
     header.push_str(&format!("image_id={image_id}\n"));
   }
-  if let Some(placement_id) = placement_id {
+  if let Some(placement_id) = metadata.placement_id {
     header.push_str(&format!("placement_id={placement_id}\n"));
   }
   header.push('\n');
