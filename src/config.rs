@@ -102,7 +102,9 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 pub fn write_app_config_sync(path: &Path, config: &AppConfig) -> Result<()> {
   let body = app_config_toml(config)?;
-  std::fs::write(path, body).with_context(|| format!("failed to write {}", path.display()))
+  let _lock = crate::cache::acquire_cache_file_lock_sync(path)?;
+  crate::cache::write_bytes_atomic_sync(path, body.as_bytes())
+    .with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn app_config_toml(config: &AppConfig) -> Result<String> {
@@ -376,7 +378,9 @@ impl NormalizeConfigDefaults for ThemeConfig {
 }
 
 async fn write_keymap_default(path: &Path, default: KeymapConfig) -> Result<KeymapConfig> {
-  fs::write(path, format_keymap_toml(&default))
+  let _lock = crate::cache::acquire_cache_file_lock(path).await?;
+  let body = format_keymap_toml(&default);
+  crate::cache::write_bytes_atomic(path, body.as_bytes())
     .await
     .with_context(|| format!("failed to write {}", path.display()))?;
   Ok(default)
@@ -396,7 +400,8 @@ where
 {
   default.normalize_defaults();
   let body = default.to_config_toml()?;
-  fs::write(path, body)
+  let _lock = crate::cache::acquire_cache_file_lock(path).await?;
+  crate::cache::write_bytes_atomic(path, body.as_bytes())
     .await
     .with_context(|| format!("failed to write {}", path.display()))?;
   Ok(default)
@@ -447,7 +452,8 @@ fn next_backup_path(path: &Path) -> PathBuf {
 
 async fn write_back_if_toml_changed(path: &Path, original: &str, normalized: &str) -> Result<()> {
   if toml_semantic_value(original) != toml_semantic_value(normalized) {
-    fs::write(path, normalized)
+    let _lock = crate::cache::acquire_cache_file_lock(path).await?;
+    crate::cache::write_bytes_atomic(path, normalized.as_bytes())
       .await
       .with_context(|| format!("failed to update {}", path.display()))?;
   }

@@ -272,6 +272,13 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
     cache::touch_cache_entry(&path).await;
     return page_image_from_path(selection.page_index, path, None);
   }
+  let _lock = cache::acquire_cache_file_lock(&path)
+    .await
+    .map_err(|error| format!("failed to lock selection cache {}: {error}", path.display()))?;
+  if path.exists() {
+    cache::touch_cache_entry(&path).await;
+    return page_image_from_path(selection.page_index, path, None);
+  }
   if let Ok(crop) = crate::pdf::render_uncached_selection_image_at(
     &document,
     selection,
@@ -280,7 +287,7 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
   )
   .await
   {
-    tokio::fs::copy(&crop.image().path, &path)
+    cache::copy_file_atomic(&crop.image().path, &path)
       .await
       .map_err(|error| {
         format!(
@@ -368,6 +375,11 @@ fn transformed_page_image(
     transformed_cache_key(page, page_size, rect, label)
   ));
   if !path.exists() {
+    let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
+    if path.exists() {
+      cache::touch_cache_entry_sync(&path);
+      return page_image_from_path(page.page_index, path, page.slice.clone());
+    }
     write_transformed_page(&path, page, page_size, rect, transform)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
@@ -391,6 +403,11 @@ fn transformed_crop_image(
     transformed_crop_cache_key(crop, selection, marker, label)
   ));
   if !path.exists() {
+    let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
+    if path.exists() {
+      cache::touch_cache_entry_sync(&path);
+      return page_image_from_path(crop.page_index, path, None);
+    }
     write_transformed_crop(&path, crop, selection, marker, transform)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
@@ -412,9 +429,12 @@ fn write_transformed_page(
   if let Some(pixel_rect) = pdf_rect_to_source_marker_pixels(page, page_size, rect, width, height) {
     transform(&mut image, pixel_rect);
   }
+  let temp_path = cache::temp_sibling_path(path);
   image
-    .save_with_format(path, ImageFormat::Png)
-    .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    .save_with_format(&temp_path, ImageFormat::Png)
+    .map_err(|error| format!("failed to write {}: {error}", temp_path.display()))?;
+  cache::persist_temp_file_sync(&temp_path, path)
+    .map_err(|error| format!("failed to move {}: {error}", path.display()))
 }
 
 fn write_transformed_crop(
@@ -433,9 +453,12 @@ fn write_transformed_crop(
   {
     transform(&mut image, pixel_rect);
   }
+  let temp_path = cache::temp_sibling_path(path);
   image
-    .save_with_format(path, ImageFormat::Png)
-    .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    .save_with_format(&temp_path, ImageFormat::Png)
+    .map_err(|error| format!("failed to write {}: {error}", temp_path.display()))?;
+  cache::persist_temp_file_sync(&temp_path, path)
+    .map_err(|error| format!("failed to move {}: {error}", path.display()))
 }
 
 fn write_cropped_page(
@@ -455,9 +478,12 @@ fn write_cropped_page(
   if let Some(max_pixels) = max_pixels {
     cropped = downscale_to_pixel_limit(cropped, max_pixels);
   }
+  let temp_path = cache::temp_sibling_path(path);
   cropped
-    .save_with_format(path, ImageFormat::Png)
-    .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    .save_with_format(&temp_path, ImageFormat::Png)
+    .map_err(|error| format!("failed to write {}: {error}", temp_path.display()))?;
+  cache::persist_temp_file_sync(&temp_path, path)
+    .map_err(|error| format!("failed to move {}: {error}", path.display()))
 }
 
 fn downscale_to_pixel_limit(image: image::DynamicImage, max_pixels: u64) -> image::DynamicImage {

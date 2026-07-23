@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
     .with_context(|| format!("failed to resolve {}", cli.path.display()))?;
 
   let mut settings = config::load_or_create().await?;
+  let _cache_instance = cache::register_instance(&settings.cache_dir)?;
   let log_path = logging::init(&settings.cache_dir)?;
   eprintln!("pdf-tui log: {}", log_path.display());
   info!(

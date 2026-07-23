@@ -85,6 +85,8 @@ pub fn write_pdf_bookmarks_with_pdftk(
   cache_dir: &Path,
   bookmarks: &[PdfBookmark],
 ) -> Result<(), String> {
+  let _lock =
+    crate::cache::acquire_cache_file_lock_sync(path).map_err(|error| error.to_string())?;
   let original_data = dump_pdf_data(path, pdftk_bin)?;
   let update_info = replace_bookmarks_in_pdftk_data(&original_data, bookmarks);
   let work_dir = cache_dir.join("bookmarks");

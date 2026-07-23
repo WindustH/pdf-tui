@@ -13,6 +13,12 @@ Page PNGs are disk-backed. Runtime state keeps only lightweight page metadata
 and short-lived decode buffers used while slicing or preparing terminal output.
 Temporary backend output is written under the system temp directory, usually
 `/tmp/pdf-tui/`, before being copied or renamed into the persistent cache.
+Persistent cache entries are written through lock files and temporary sibling
+files before being atomically moved into place, so concurrent `pdf-tui`
+instances do not consume partially-written page, slice, text, highlight, or
+terminal-stream cache files. Unix platforms use atomic same-directory rename;
+Windows uses `MoveFileExW` replacement because the standard rename API cannot
+overwrite an existing destination there.
 
 `render.pdf_raster_backend` selects `pdfium`, `mutool`, or `poppler`.
 `render.pdf_raster_batch_pages` controls how many consecutive pages one raster

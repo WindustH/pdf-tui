@@ -1626,7 +1626,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 
 [[package]]
 name = "pdf-tui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1636,6 +1636,7 @@ dependencies = [
  "hex",
  "image",
  "img-tui",
+ "libc",
  "pdfium-render",
  "ratatui",
  "serde",
@@ -1645,6 +1646,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "windows-sys",
  "zstd",
 ]
 

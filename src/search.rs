@@ -97,6 +97,17 @@ pub async fn build_search_index(
   if let Ok(index) = read_cached_search_index(&cache_path).await {
     return Ok(index);
   }
+  let _lock = cache::acquire_cache_file_lock(&cache_path)
+    .await
+    .map_err(|error| {
+      format!(
+        "failed to lock search cache {}: {error}",
+        cache_path.display()
+      )
+    })?;
+  if let Ok(index) = read_cached_search_index(&cache_path).await {
+    return Ok(index);
+  }
 
   let output = Command::new(pdftotext_bin)
     .arg("-tsv")
@@ -256,10 +267,22 @@ pub fn highlighted_viewer_image(
   let cache_key = highlighted_cache_key(page, search_match);
   let path = dir.join(format!("{cache_key}.png"));
   if !path.exists() {
+    let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
+    if path.exists() {
+      cache::touch_cache_entry_sync(&path);
+      return page_image_from_highlight_path(page, path);
+    }
     write_highlighted_page(&path, page, search_match)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
   cache::touch_cache_entry_sync(&path);
+  page_image_from_highlight_path(page, path)
+}
+
+fn page_image_from_highlight_path(
+  page: &PageImage,
+  path: std::path::PathBuf,
+) -> Result<Option<PageImage>, String> {
   let metadata = fs::metadata(&path).map_err(|err| err.to_string())?;
   Ok(Some(PageImage {
     page_index: page.page_index,
@@ -396,7 +419,7 @@ async fn write_cached_search_index(path: &Path, cached: CachedSearchIndex) -> Re
           path.display()
         )
       })?;
-  async_fs::write(path, compressed)
+  cache::write_bytes_atomic(path, &compressed)
     .await
     .map_err(|error| format!("failed to write search cache {}: {error}", path.display()))?;
   cache::touch_cache_entry(path).await;
@@ -476,9 +499,12 @@ fn write_highlighted_page(
       pixel.0[2] = 255u8.saturating_sub(pixel.0[2]);
     }
   }
+  let temp_path = cache::temp_sibling_path(path);
   image
-    .save(path)
-    .map_err(|err| format!("failed to write {}: {err}", path.display()))
+    .save(&temp_path)
+    .map_err(|err| format!("failed to write {}: {err}", temp_path.display()))?;
+  cache::persist_temp_file_sync(&temp_path, path)
+    .map_err(|err| format!("failed to move highlighted cache {}: {err}", path.display()))
 }
 
 fn highlighted_cache_key(page: &PageImage, search_match: &PdfSearchMatch) -> String {

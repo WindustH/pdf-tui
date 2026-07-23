@@ -130,7 +130,7 @@ async fn render_page_slice_image_with_batch_mode(
 
 async fn write_slice_metadata(path: &Path, metadata: &PageSliceMetadata) -> Result<()> {
   let encoded = toml::to_string_pretty(metadata).context("failed to encode slice metadata")?;
-  fs::write(path, encoded)
+  cache::write_bytes_atomic(path, encoded.as_bytes())
     .await
     .with_context(|| format!("failed to write {}", path.display()))
 }

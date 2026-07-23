@@ -115,6 +115,8 @@ pub fn write_pdf_metadata_with_exiftool(
   if changes.is_empty() {
     return Ok(());
   }
+  let _lock =
+    crate::cache::acquire_cache_file_lock_sync(path).map_err(|error| error.to_string())?;
   let mut command = Command::new("exiftool");
   command.arg("-overwrite_original");
   for change in changes {

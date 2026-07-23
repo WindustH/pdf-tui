@@ -62,7 +62,7 @@ pub(super) async fn write_cache_file(
   )
   .await
   .map_err(|error| format!("failed to encode cache {}: {error}", cache_path.display()))?;
-  fs::write(cache_path, cached)
+  cache::write_bytes_atomic(cache_path, &cached)
     .await
     .map_err(|error| format!("failed to write cache {}: {error}", cache_path.display()))?;
   cache::touch_cache_entry(cache_path).await;

@@ -72,41 +72,31 @@ async fn render_or_read_cache(
     "{}.ansi",
     render_cache_key(page, width, height, kind, config, native_config, mode)
   ));
+  let read_request = RenderCacheReadRequest {
+    cache_path: &cache_path,
+    width,
+    height,
+    native_config,
+    mode,
+    image_id,
+    placement_id,
+    config,
+  };
 
-  if let Ok(bytes) = fs::read(&cache_path).await
-    && let Ok(decoded) = decode_cache_file(
-      &bytes,
-      width,
-      height,
-      native_config.cell_pixels,
-      mode,
-      image_id,
-      placement_id,
-    )
+  if let Some(rendered) = read_render_cache(read_request).await {
+    return rendered;
+  }
+
+  let _lock = cache::acquire_cache_file_lock(&cache_path)
     .await
-  {
-    if decoded.should_rewrite {
-      rewrite_cache_file(
-        &cache_path,
-        &decoded.payload,
-        width,
-        height,
-        native_config.cell_pixels,
-        mode,
-        image_id,
-        placement_id,
-        config,
+    .map_err(|error| {
+      format!(
+        "failed to lock render cache {}: {error}",
+        cache_path.display()
       )
-      .await;
-    }
-    cache::touch_cache_entry(&cache_path).await;
-    return decode_rendered(
-      decoded.payload,
-      mode,
-      native_config,
-      decoded.image_id,
-      decoded.placement_id,
-    );
+    })?;
+  if let Some(rendered) = read_render_cache(read_request).await {
+    return rendered;
   }
 
   let bytes = render_bytes(
@@ -137,6 +127,57 @@ async fn render_or_read_cache(
   .await;
 
   decode_rendered(bytes, mode, native_config, image_id, placement_id)
+}
+
+#[derive(Clone, Copy)]
+struct RenderCacheReadRequest<'a> {
+  cache_path: &'a Path,
+  width: u16,
+  height: u16,
+  native_config: &'a NativeImageConfig,
+  mode: RenderMode,
+  image_id: Option<u32>,
+  placement_id: Option<u32>,
+  config: &'a RenderConfig,
+}
+
+async fn read_render_cache(
+  request: RenderCacheReadRequest<'_>,
+) -> Option<Result<RenderedImage, String>> {
+  let bytes = fs::read(request.cache_path).await.ok()?;
+  let decoded = decode_cache_file(
+    &bytes,
+    request.width,
+    request.height,
+    request.native_config.cell_pixels,
+    request.mode,
+    request.image_id,
+    request.placement_id,
+  )
+  .await
+  .ok()?;
+  if decoded.should_rewrite {
+    rewrite_cache_file(
+      request.cache_path,
+      &decoded.payload,
+      request.width,
+      request.height,
+      request.native_config.cell_pixels,
+      request.mode,
+      request.image_id,
+      request.placement_id,
+      request.config,
+    )
+    .await;
+  }
+  cache::touch_cache_entry(request.cache_path).await;
+  Some(decode_rendered(
+    decoded.payload,
+    request.mode,
+    request.native_config,
+    decoded.image_id,
+    decoded.placement_id,
+  ))
 }
 
 #[allow(clippy::too_many_arguments)]

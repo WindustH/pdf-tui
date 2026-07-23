@@ -25,6 +25,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
 
     steps:
       - name: Resolve tag
@@ -60,22 +62,36 @@ jobs:
           target="${{ matrix.target }}"
           package="pdf-tui-${version}-${target}"
           staging="dist/${package}"
+          exe=""
+          if [[ "$target" == *windows* ]]; then
+            exe=".exe"
+          fi
 
           mkdir -p "$staging"
-          cp "target/${target}/release/pdf-tui" "$staging/"
+          cp "target/${target}/release/pdf-tui${exe}" "$staging/"
           cp LICENSE README.md "$staging/"
           cp -R doc "$staging/"
 
-          tar -czf "dist/${package}.tar.gz" -C dist "$package"
+          if [[ "$target" == *windows* ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path 'dist/${package}' -DestinationPath 'dist/${package}.zip' -Force"
+            archive="dist/${package}.zip"
+          else
+            tar -czf "dist/${package}.tar.gz" -C dist "$package"
+            archive="dist/${package}.tar.gz"
+          fi
 
           if command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+            shasum -a 256 "$archive" > "${archive}.sha256"
           else
-            sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+            sha256sum "$archive" > "${archive}.sha256"
           fi
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/*.sha256)
+          gh release upload "$TAG" "${assets[@]}" --clobber
