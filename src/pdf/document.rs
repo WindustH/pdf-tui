@@ -31,6 +31,7 @@ pub struct PdfDocument {
   pub pdfium_library_path: Option<String>,
   pub dpi: u16,
   pub page_sizes: Vec<(u32, u32)>,
+  page_rotations: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +182,7 @@ impl PdfDocument {
       pdfium_library_path: render.pdfium_library_path.clone(),
       dpi: render.page_dpi,
       page_sizes: pdfinfo.page_sizes,
+      page_rotations: pdfinfo.page_rotations,
     })
   }
 
@@ -192,9 +194,13 @@ impl PdfDocument {
       .unwrap_or(default_page_size())
   }
 
+  pub(super) fn page_rotation(&self, index: usize) -> u16 {
+    self.page_rotations.get(index).copied().unwrap_or(0)
+  }
+
   pub(super) fn cache_key(&self, target_width: u32, target_height: u32) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pdf-tui-page-v6");
+    hasher.update(b"pdf-tui-page-v7");
     hasher.update(self.raster_backend.label().as_bytes());
     hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
@@ -208,7 +214,7 @@ impl PdfDocument {
 
   pub(super) fn slice_cache_key(&self, spec: PageSliceSpec) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pdf-tui-page-slice-v5");
+    hasher.update(b"pdf-tui-page-slice-v6");
     hasher.update(self.raster_backend.label().as_bytes());
     hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
@@ -223,12 +229,14 @@ impl PdfDocument {
 struct PdfInfo {
   page_count: usize,
   page_sizes: Vec<(u32, u32)>,
+  page_rotations: Vec<u16>,
 }
 
 fn read_pdfinfo(path: &Path, pdfinfo_bin: &str) -> Result<PdfInfo> {
   let stdout = run_pdfinfo(path, pdfinfo_bin, &[])?;
   let mut page_count = None;
   let mut default_size = None;
+  let mut default_rotation = 0;
   for line in stdout.lines() {
     if let Some(value) = line.strip_prefix("Pages:") {
       page_count = Some(
@@ -239,14 +247,19 @@ fn read_pdfinfo(path: &Path, pdfinfo_bin: &str) -> Result<PdfInfo> {
       );
     } else if let Some(value) = line.strip_prefix("Page size:") {
       default_size = parse_page_size(value);
+    } else if let Some(value) = line.strip_prefix("Page rot:") {
+      default_rotation = parse_page_rotation(value).unwrap_or(0);
     }
   }
   let Some(page_count) = page_count else {
     bail!("pdfinfo did not report a page count");
   };
-  let fallback = default_size.unwrap_or_else(default_page_size);
-  let page_sizes = match read_pdfinfo_page_sizes(path, pdfinfo_bin, page_count, fallback) {
-    Ok(page_sizes) => page_sizes,
+  let fallback = PdfPageInfo {
+    size: default_size.unwrap_or_else(default_page_size),
+    rotation: default_rotation,
+  };
+  let pages = match read_pdfinfo_pages(path, pdfinfo_bin, page_count, fallback) {
+    Ok(pages) => pages,
     Err(error) => {
       warn!(
         path = %path.display(),
@@ -256,9 +269,15 @@ fn read_pdfinfo(path: &Path, pdfinfo_bin: &str) -> Result<PdfInfo> {
       vec![fallback; page_count]
     }
   };
+  let page_sizes = pages
+    .iter()
+    .map(|page| logical_page_size(page.size, page.rotation))
+    .collect();
+  let page_rotations = pages.iter().map(|page| page.rotation).collect();
   Ok(PdfInfo {
     page_count,
     page_sizes,
+    page_rotations,
   })
 }
 
@@ -275,12 +294,18 @@ fn run_pdfinfo(path: &Path, pdfinfo_bin: &str, args: &[String]) -> Result<String
   Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn read_pdfinfo_page_sizes(
+#[derive(Debug, Clone, Copy)]
+struct PdfPageInfo {
+  size: (u32, u32),
+  rotation: u16,
+}
+
+fn read_pdfinfo_pages(
   path: &Path,
   pdfinfo_bin: &str,
   page_count: usize,
-  fallback: (u32, u32),
-) -> Result<Vec<(u32, u32)>> {
+  fallback: PdfPageInfo,
+) -> Result<Vec<PdfPageInfo>> {
   if page_count == 0 {
     return Ok(Vec::new());
   }
@@ -294,15 +319,19 @@ fn read_pdfinfo_page_sizes(
       page_count.to_string(),
     ],
   )?;
-  let mut page_sizes = vec![fallback; page_count];
+  let mut pages = vec![fallback; page_count];
   for line in stdout.lines() {
     if let Some((index, size)) = parse_numbered_page_size(line)
-      && let Some(slot) = page_sizes.get_mut(index)
+      && let Some(page) = pages.get_mut(index)
     {
-      *slot = size;
+      page.size = size;
+    } else if let Some((index, rotation)) = parse_numbered_page_rotation(line)
+      && let Some(page) = pages.get_mut(index)
+    {
+      page.rotation = rotation;
     }
   }
-  Ok(page_sizes)
+  Ok(pages)
 }
 
 fn parse_numbered_page_size(line: &str) -> Option<(usize, (u32, u32))> {
@@ -313,12 +342,33 @@ fn parse_numbered_page_size(line: &str) -> Option<(usize, (u32, u32))> {
   page_number.checked_sub(1).map(|index| (index, size))
 }
 
+fn parse_numbered_page_rotation(line: &str) -> Option<(usize, u16)> {
+  let line = line.strip_prefix("Page")?.trim_start();
+  let (number, rest) = line.split_once("rot:")?;
+  let page_number = number.trim().parse::<usize>().ok()?;
+  let rotation = parse_page_rotation(rest)?;
+  page_number.checked_sub(1).map(|index| (index, rotation))
+}
+
 fn parse_page_size(value: &str) -> Option<(u32, u32)> {
   let (width, rest) = value.trim().split_once('x')?;
   let height = rest.split_whitespace().next()?;
   let width = width.trim().parse::<f64>().ok()?.round().max(1.0) as u32;
   let height = height.trim().parse::<f64>().ok()?.round().max(1.0) as u32;
   Some((width, height))
+}
+
+fn parse_page_rotation(value: &str) -> Option<u16> {
+  let rotation = value.split_whitespace().next()?.parse::<i32>().ok()?;
+  Some(rotation.rem_euclid(360) as u16)
+}
+
+fn logical_page_size(size: (u32, u32), rotation: u16) -> (u32, u32) {
+  if rotation % 180 == 90 {
+    (size.1, size.0)
+  } else {
+    size
+  }
 }
 
 fn default_page_size() -> (u32, u32) {

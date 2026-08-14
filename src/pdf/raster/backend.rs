@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::ImageFormat;
 use pdfium_render::prelude::*;
-use tokio::process::Command;
+use tokio::{fs, process::Command};
 
 use crate::config::PdfRasterBackend;
 
@@ -35,16 +35,7 @@ pub(super) async fn render_pdf_page_batch(
 ) -> Result<HashMap<usize, PathBuf>> {
   match document.raster_backend {
     PdfRasterBackend::Poppler => {
-      render_poppler_page_batch(
-        document,
-        first_page,
-        last_page,
-        target_width,
-        target_height,
-        temp_dir,
-        temp_prefix,
-      )
-      .await
+      render_poppler_page_batch(document, missing, target_width, target_height, temp_dir).await
     }
     PdfRasterBackend::Mutool => {
       render_mutool_page_batch(
@@ -70,40 +61,71 @@ pub(super) async fn render_pdf_page_batch(
   }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn render_poppler_page_batch(
   document: &PdfDocument,
-  first_page: usize,
-  last_page: usize,
+  missing: &[usize],
   target_width: u32,
   target_height: u32,
   temp_dir: &TempWorkDir,
-  temp_prefix: &Path,
 ) -> Result<HashMap<usize, PathBuf>> {
-  if first_page == last_page {
-    let temp_prefix = temp_dir.path().join(format!("page-{first_page:05}"));
-    let temp_output = single_png_path_for_prefix(&temp_prefix);
-    run_pdftoppm_single(
-      document,
-      first_page,
-      target_width,
-      target_height,
-      &temp_prefix,
-    )
-    .await?;
-    Ok(HashMap::from([(first_page, temp_output)]))
-  } else {
-    run_pdftoppm_batch(
-      document,
-      first_page,
-      last_page,
-      target_width,
-      target_height,
-      temp_prefix,
-    )
-    .await?;
-    collect_numbered_png_outputs(temp_prefix, first_page, last_page).await
+  let mut requested_outputs = HashMap::new();
+  for swaps_axes in [false, true] {
+    let pages = missing
+      .iter()
+      .copied()
+      .filter(|index| page_rotation_swaps_axes(document, *index) == swaps_axes)
+      .collect::<Vec<_>>();
+    if pages.is_empty() {
+      continue;
+    }
+
+    let first_page = pages[0] + 1;
+    let last_page = pages[pages.len() - 1] + 1;
+    let group_dir = temp_dir
+      .path()
+      .join(if swaps_axes { "rotated" } else { "unrotated" });
+    fs::create_dir_all(&group_dir)
+      .await
+      .with_context(|| format!("failed to create {}", group_dir.display()))?;
+    let temp_prefix = group_dir.join("page");
+    let (raster_width, raster_height) = if swaps_axes {
+      (target_height, target_width)
+    } else {
+      (target_width, target_height)
+    };
+
+    let mut outputs = if first_page == last_page {
+      let output_path = single_png_path_for_prefix(&temp_prefix);
+      run_pdftoppm_single(
+        document,
+        first_page,
+        raster_width,
+        raster_height,
+        &temp_prefix,
+      )
+      .await?;
+      HashMap::from([(first_page, output_path)])
+    } else {
+      run_pdftoppm_batch(
+        document,
+        first_page,
+        last_page,
+        raster_width,
+        raster_height,
+        &temp_prefix,
+      )
+      .await?;
+      collect_numbered_png_outputs(&temp_prefix, first_page, last_page).await?
+    };
+
+    for page_index in pages {
+      let page_number = page_index + 1;
+      if let Some(output) = outputs.remove(&page_number) {
+        requested_outputs.insert(page_number, output);
+      }
+    }
   }
+  Ok(requested_outputs)
 }
 
 async fn run_pdftoppm_batch(
@@ -190,6 +212,12 @@ pub(super) async fn render_poppler_selection_image(
     plan.crop.width, plan.crop.height
   ));
   let output_path = single_png_path_for_prefix(&temp_prefix);
+  let (raster_width, raster_height) = poppler_target_size(
+    document,
+    page_number.saturating_sub(1),
+    plan.page_width,
+    plan.page_height,
+  );
   let output = Command::new(&document.pdftoppm_bin)
     .arg("-f")
     .arg(page_number.to_string())
@@ -197,9 +225,9 @@ pub(super) async fn render_poppler_selection_image(
     .arg(page_number.to_string())
     .arg("-singlefile")
     .arg("-scale-to-x")
-    .arg(plan.page_width.to_string())
+    .arg(raster_width.to_string())
     .arg("-scale-to-y")
-    .arg(plan.page_height.to_string())
+    .arg(raster_height.to_string())
     .arg("-x")
     .arg(plan.crop.x.to_string())
     .arg("-y")
@@ -231,6 +259,23 @@ pub(super) async fn render_poppler_selection_image(
     );
   }
   Ok(output_path)
+}
+
+fn page_rotation_swaps_axes(document: &PdfDocument, page_index: usize) -> bool {
+  document.page_rotation(page_index) % 180 == 90
+}
+
+fn poppler_target_size(
+  document: &PdfDocument,
+  page_index: usize,
+  target_width: u32,
+  target_height: u32,
+) -> (u32, u32) {
+  if page_rotation_swaps_axes(document, page_index) {
+    (target_height, target_width)
+  } else {
+    (target_width, target_height)
+  }
 }
 
 async fn render_mutool_page_batch(
