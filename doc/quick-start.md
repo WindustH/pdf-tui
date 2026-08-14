@@ -1,5 +1,9 @@
 # Quick Start
 
+For native Windows, use the
+[experimental Windows setup guide](windows.md). The Windows version is built by
+CI but has not been tested by the maintainer.
+
 Install the external tools used at runtime:
 
 ```sh

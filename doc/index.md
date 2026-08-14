@@ -6,6 +6,8 @@ This directory contains user, configuration, and implementation notes for
 ## Start Here
 
 - [Quick Start](quick-start.md): build, run, and open a PDF.
+- [Windows Setup](windows.md): experimental native Windows installation,
+  dependencies, paths, and troubleshooting. The Windows version is untested.
 - [Controls](controls.md): default browsing, metadata, bookmark, search, prompt, mouse, and which-key controls.
 - [Commands](commands.md): command prompt commands such as `:layout`, `:layout-use`, and `:clear-cache`.
 

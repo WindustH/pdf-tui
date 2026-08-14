@@ -50,6 +50,14 @@ Homebrew:
 brew install WindustH/tap/pdf-tui
 ```
 
+Windows (experimental and untested): download the
+`x86_64-pc-windows-msvc` ZIP from the release page, then follow the
+[Windows setup guide](doc/windows.md). The Windows build is produced by CI, but
+has not been tested by the maintainer on a real Windows installation. The guide
+covers Poppler and optional feature dependencies plus the default Pdfium
+backend and its `pdfium.dll` configuration. Pdfium was the fastest backend in
+the project's existing Linux benchmark; Windows performance is untested.
+
 The Homebrew stable formula downloads a prebuilt release binary. To build the
 latest git version from source:
 
@@ -83,4 +91,6 @@ quit
 ```
 
 ## Documentation
-[doc/index.md](doc/index.md).
+
+- [Documentation index](doc/index.md)
+- [Windows setup (experimental and untested)](doc/windows.md)
