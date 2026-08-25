@@ -31,7 +31,11 @@ pub(super) async fn render_with_fallbacks(
   let mut errors = Vec::new();
   for mode in modes {
     let image_id = kitty_image_id(&page, width, height, mode);
-    let placement_id = kitty_placement_id(&page, mode, image_id);
+    let placement_id = if native_config.kitty_unicode_placeholders {
+      None
+    } else {
+      kitty_placement_id(&page, mode, image_id)
+    };
     let rendered = render_or_read_cache(
       &page,
       &cache_dir,
@@ -197,7 +201,20 @@ async fn render_bytes(
   if mode.is_protocol() {
     let prepared =
       prepared_native_image(page, width, height, kind, native_config, prepared_images).await?;
-    if mode == RenderMode::Kitty
+    if mode == RenderMode::Kitty && native_config.kitty_unicode_placeholders {
+      let image_id = image_id.unwrap_or(1);
+      let upload = native_image::render_prepared_kitty_upload(&prepared, native_config, image_id)
+        .await
+        .map_err(|error| error.to_string())?;
+      let virtual_placement =
+        native_image::render_kitty_virtual_placement(native_config, image_id, width, height);
+      let mut data = upload.data;
+      data.extend_from_slice(&virtual_placement);
+      Ok(RenderedBytes {
+        data,
+        refresh: Some(virtual_placement),
+      })
+    } else if mode == RenderMode::Kitty
       && let Some(placement_id) = placement_id
     {
       let viewport = native_image::NativeImageViewport {

@@ -65,7 +65,7 @@ impl Default for ThemeConfig {
       bookmark_leaf_color: "dark_gray".to_string(),
       error: "red".to_string(),
       which_key_columns: 3,
-      which_key_background: "black".to_string(),
+      which_key_background: "reset".to_string(),
       which_key_foreground: "white".to_string(),
       which_key_key: "light_cyan".to_string(),
       which_key_rest: "dark_gray".to_string(),

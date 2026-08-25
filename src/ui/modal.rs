@@ -1,5 +1,5 @@
 use framework_tui::{
-  KeyHelpDialogStyle, PopupDialogStyle, draw_key_help_dialog, draw_popup_dialog,
+  KeyHelpDialogStyle, PopupDialogStyle, draw_key_help_dialog, draw_popup_dialog, overlay_background,
 };
 use ratatui::{
   Frame,
@@ -10,14 +10,15 @@ use ratatui::{
 
 use crate::app::{App, ConfirmDialog};
 
-pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
   let Some(confirm) = &app.confirm else {
-    return;
+    return None;
   };
   let theme = &app.settings.theme;
+  let background = overlay_background();
   let style = Style::default()
     .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.which_key_background));
+    .bg(background);
   let text = match confirm {
     ConfirmDialog::MetadataWrite { edit } => {
       let mut lines = vec![
@@ -95,17 +96,18 @@ pub(super) fn draw_confirm(frame: &mut Frame, app: &App, area: Rect) {
     border: style,
     ..PopupDialogStyle::default()
   };
-  let _ = draw_popup_dialog(frame, area, "confirm", text, &popup_style);
+  draw_popup_dialog(frame, area, "confirm", text, &popup_style)
 }
 
-pub(super) fn draw_key_help(frame: &mut Frame, app: &App, area: Rect) {
+pub(super) fn draw_key_help(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
   if !app.key_help {
-    return;
+    return None;
   }
   let theme = &app.settings.theme;
+  let background = overlay_background();
   let style = Style::default()
     .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.which_key_background));
+    .bg(background);
   let key_style = style
     .fg(theme.color(&theme.which_key_key))
     .add_modifier(Modifier::BOLD);
@@ -124,5 +126,5 @@ pub(super) fn draw_key_help(frame: &mut Frame, app: &App, area: Rect) {
     muted,
     ..KeyHelpDialogStyle::default()
   };
-  let _ = draw_key_help_dialog(frame, area, app.key_help_title(), &entries, &help_style);
+  draw_key_help_dialog(frame, area, app.key_help_title(), &entries, &help_style)
 }

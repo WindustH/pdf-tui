@@ -1,4 +1,4 @@
-use img_tui::{NativeImageConfig, RenderMode};
+use img_tui::{NativeImageConfig, RenderMode, native_image};
 use sha2::{Digest, Sha256};
 
 use crate::{config::RenderConfig, pdf::PageImage};
@@ -90,8 +90,7 @@ pub(super) fn kitty_image_id(
   hasher.update(height.to_le_bytes());
   hasher.update(mode.label().as_bytes());
   let digest = hasher.finalize();
-  let image_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x7fff_ffff;
-  Some(image_id.max(1))
+  Some(native_image::kitty_image_id(&digest))
 }
 
 pub(super) fn kitty_placement_id(

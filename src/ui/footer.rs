@@ -1,7 +1,6 @@
 use framework_tui::{
-  CompletionListStyle, KeyHintsStyle, PromptLineStyle, completion_rows,
-  default_completion_selected_style, draw_completion_list, draw_key_hints, draw_prompt_line,
-  key_hint_columns, key_hint_rows,
+  KeyHintsStyle, PromptLineStyle, completion_list_style, completion_rows, draw_completion_list,
+  draw_key_hints, draw_prompt_line, key_hint_columns, key_hint_rows, overlay_background,
 };
 use ratatui::{
   Frame,
@@ -123,13 +122,7 @@ fn draw_command_completion(frame: &mut Frame, app: &App, area: Rect) {
     return;
   };
   let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.which_key_foreground))
-    .bg(theme.color(&theme.which_key_background));
-  let style = CompletionListStyle {
-    base,
-    selected: default_completion_selected_style(),
-  };
+  let style = completion_list_style(theme.color(&theme.which_key_foreground));
   draw_completion_list(frame, completion, area, &style);
 }
 
@@ -137,7 +130,7 @@ fn draw_which_key(frame: &mut Frame, app: &App, area: Rect) {
   let theme = &app.settings.theme;
   let base = Style::default()
     .fg(theme.color(&theme.which_key_foreground))
-    .bg(theme.color(&theme.which_key_background));
+    .bg(overlay_background());
   let style = KeyHintsStyle {
     base,
     key: base

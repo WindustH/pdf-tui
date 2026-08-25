@@ -38,16 +38,6 @@ struct UiFrameState {
   drawn_render_keys: Vec<String>,
 }
 
-impl UiFrameState {
-  fn clear_transient_output(&mut self) {
-    self.overlays.clear();
-    self.cursor_position = None;
-    self.preserve_overlays = false;
-    self.preserve_areas.clear();
-    self.drawn_render_keys.clear();
-  }
-}
-
 struct UiDrawContext<'a> {
   app: &'a mut App,
   pages: &'a mut PageStore,
@@ -73,7 +63,9 @@ pub fn draw(
   let main = chunks[0];
   let footer = chunks[1];
   let completion_overlay = footer::command_completion_overlay_area(app, main);
-  let obscured_areas = completion_overlay.iter().copied().collect::<Vec<_>>();
+  // Text-cell modals do not remove protocol overlays. Kitty U=1 clipping is
+  // handled after the page is drawn through `FrameOutput::occluders`.
+  let obscured_areas = [];
   let mut state = UiFrameState::default();
 
   {
@@ -97,14 +89,21 @@ pub fn draw(
     &mut state.cursor_position,
     state.frame_message.as_deref(),
   );
-  if app.confirm.is_some() {
-    modal::draw_confirm(frame, app, area);
+  // Modal rects replace kitty U=1 placeholder cells. Uncovered cells keep
+  // displaying the page, and the regular text diff restores placeholders
+  // when a modal closes.
+  let mut occluders = Vec::new();
+  if let Some(area) = completion_overlay {
+    occluders.push(area);
   }
-  if app.key_help {
-    modal::draw_key_help(frame, app, area);
+  if let Some(confirm_area) = modal::draw_confirm(frame, app, area) {
+    occluders.push(confirm_area);
+  }
+  if let Some(help_area) = modal::draw_key_help(frame, app, area) {
+    occluders.push(help_area);
   }
   if app.confirm.is_some() || app.key_help {
-    state.clear_transient_output();
+    state.cursor_position = None;
   }
   let protocol_writes = if state.preserve_overlays {
     renderer.take_protocol_writes(&state.drawn_render_keys, false)
@@ -140,6 +139,7 @@ pub fn draw(
     cursor_position: state.cursor_position,
     preserve_overlays,
     preserve_areas,
+    occluders,
   }
 }
 
