@@ -9,6 +9,7 @@ mod selection_state;
 
 use std::collections::{HashMap, HashSet};
 
+use crossterm::event::MouseButton;
 use framework_tui::{
   CommandCompletion, CommandState, KeyBindings, KeyContext, KeyDispatcher, KeyHelpEntry, KeyHint,
   Prompt,
@@ -75,6 +76,7 @@ pub struct SelectionDisplay {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SelectionMousePress {
+  button: MouseButton,
   column: u16,
   row: u16,
   saw_drag: bool,

@@ -69,22 +69,20 @@ impl App {
         MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Search => {
           self.handle_search_mouse_click(mouse)
         }
-        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Viewer => {
-          self.handle_viewer_mouse_left_down(mouse)
-        }
-        MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Selection => {
-          self.handle_selection_mouse_left_down(mouse)
-        }
-        MouseEventKind::Drag(MouseButton::Left)
+        MouseEventKind::Down(button)
           if matches!(self.view, ViewMode::Viewer | ViewMode::Selection) =>
         {
-          self.handle_selection_mouse_drag(mouse)
+          self.handle_selection_mouse_down(mouse, button)
         }
-        MouseEventKind::Up(MouseButton::Left) if self.view == ViewMode::Viewer => {
-          self.handle_viewer_mouse_left(mouse, tx)
+        MouseEventKind::Drag(button)
+          if matches!(self.view, ViewMode::Viewer | ViewMode::Selection) =>
+        {
+          self.handle_selection_mouse_drag(mouse, button)
         }
-        MouseEventKind::Up(MouseButton::Left) if self.view == ViewMode::Selection => {
-          self.handle_selection_mouse_left(mouse, tx)
+        MouseEventKind::Up(button)
+          if matches!(self.view, ViewMode::Viewer | ViewMode::Selection) =>
+        {
+          self.handle_selection_mouse_up(mouse, button, tx)
         }
         MouseEventKind::ScrollDown if self.view == ViewMode::Metadata => {
           self.metadata_scroll_down()
@@ -350,64 +348,40 @@ impl App {
     }
   }
 
-  fn handle_viewer_mouse_left_down(&mut self, mouse: MouseEvent) {
-    match self
-      .keymap
-      .match_sequence(self.key_context(), &[String::from("mouse_left")])
-    {
-      MatchResult::Action(action) if action == "selection_mark" => {
-        self.begin_selection_mouse_press(mouse)
-      }
-      _ => {}
+  fn handle_selection_mouse_down(&mut self, mouse: MouseEvent, button: MouseButton) {
+    let token = mouse_button_token(button).to_string();
+    let result = if self.view == ViewMode::Selection {
+      self
+        .selection_keymap
+        .match_sequence(self.key_context(), &[token])
+    } else {
+      self.keymap.match_sequence(self.key_context(), &[token])
+    };
+    if matches!(result, MatchResult::Action(action) if action == "selection_mark") {
+      self.begin_selection_mouse_press(mouse, button);
     }
   }
 
-  fn handle_selection_mouse_left_down(&mut self, mouse: MouseEvent) {
-    match self
-      .selection_keymap
-      .match_sequence(self.key_context(), &[String::from("mouse_left")])
-    {
-      MatchResult::Action(action) if action == "selection_mark" => {
-        self.begin_selection_mouse_press(mouse)
-      }
-      _ => {}
-    }
-  }
-
-  fn handle_viewer_mouse_left(
+  fn handle_selection_mouse_up(
     &mut self,
     mouse: MouseEvent,
+    button: MouseButton,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    if self.finish_selection_mouse_press(mouse, tx) {
+    if self.finish_selection_mouse_press(mouse, button, tx) {
       return;
     }
-    match self
-      .key_dispatcher
-      .dispatch(&self.keymap, self.key_context(), "mouse_left")
-    {
-      MatchResult::Action(action)
-        if action == "selection_mark" && self.selection_anchor.is_some() =>
-      {
-        self.handle_selection_mouse_click(mouse, tx)
-      }
-      MatchResult::Action(action) => self.handle_action(&action, tx),
-      MatchResult::Prefix(_) | MatchResult::None => {}
-    }
-  }
-
-  fn handle_selection_mouse_left(
-    &mut self,
-    mouse: MouseEvent,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
-  ) {
-    if self.finish_selection_mouse_press(mouse, tx) {
-      return;
-    }
-    match self
-      .key_dispatcher
-      .dispatch(&self.selection_keymap, self.key_context(), "mouse_left")
-    {
+    let token = mouse_button_token(button);
+    let result = if self.view == ViewMode::Selection {
+      self
+        .key_dispatcher
+        .dispatch(&self.selection_keymap, self.key_context(), token)
+    } else {
+      self
+        .key_dispatcher
+        .dispatch(&self.keymap, self.key_context(), token)
+    };
+    match result {
       MatchResult::Action(action)
         if action == "selection_mark" && self.selection_anchor.is_some() =>
       {
@@ -943,4 +917,12 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
     && column < area.x.saturating_add(area.width)
     && row >= area.y
     && row < area.y.saturating_add(area.height)
+}
+
+fn mouse_button_token(button: MouseButton) -> &'static str {
+  match button {
+    MouseButton::Left => "mouse_left",
+    MouseButton::Right => "mouse_right",
+    MouseButton::Middle => "mouse_middle",
+  }
 }

@@ -40,7 +40,7 @@ Supported key names include:
 - `left`, `right`, `up`, `down`
 - `home`, `end`, `pgup`, `pgdn`
 - Yazi-style names such as `<Enter>`, `<PageDown>`, `<C-c>`
-- mouse tokens such as `mouse_left`
+- `mouse_left`, `mouse_right`, `mouse_middle`
 
 ## Actions
 

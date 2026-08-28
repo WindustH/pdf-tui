@@ -1,4 +1,4 @@
-use crossterm::event::MouseEvent;
+use crossterm::event::{MouseButton, MouseEvent};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
@@ -95,7 +95,7 @@ impl App {
     self.upsert_selection_draft(selection_bounds);
   }
 
-  pub(super) fn begin_selection_mouse_press(&mut self, mouse: MouseEvent) {
+  pub(super) fn begin_selection_mouse_press(&mut self, mouse: MouseEvent, button: MouseButton) {
     self.selection_mouse_press = None;
     if self.selection_anchor.is_some() || self.selection_second_anchor.is_some() {
       return;
@@ -111,6 +111,7 @@ impl App {
       marker: hit.cell_rect,
     });
     self.selection_mouse_press = Some(SelectionMousePress {
+      button,
       column: mouse.column,
       row: mouse.row,
       saw_drag: false,
@@ -119,8 +120,9 @@ impl App {
     self.set_message(format!("selection anchor: page {}", hit.page_index + 1));
   }
 
-  pub(super) fn handle_selection_mouse_drag(&mut self, mouse: MouseEvent) {
+  pub(super) fn handle_selection_mouse_drag(&mut self, mouse: MouseEvent, button: MouseButton) {
     if let Some(press) = &mut self.selection_mouse_press
+      && press.button == button
       && (press.column != mouse.column || press.row != mouse.row)
     {
       press.saw_drag = true;
@@ -130,11 +132,16 @@ impl App {
   pub(super) fn finish_selection_mouse_press(
     &mut self,
     mouse: MouseEvent,
+    button: MouseButton,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) -> bool {
-    let Some(press) = self.selection_mouse_press.take() else {
+    let Some(press) = self.selection_mouse_press else {
       return false;
     };
+    if press.button != button {
+      return false;
+    }
+    self.selection_mouse_press = None;
     if self.selection_anchor.is_none() {
       return true;
     }
