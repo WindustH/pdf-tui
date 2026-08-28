@@ -32,8 +32,17 @@ from `img-tui`.
 `img-tui` detects tmux and screen passthrough and configures protocol wrapping
 for Chafa and native image protocols.
 
-For zellij, Sixel is disabled by default unless `render.zellij_sixel` is set
-to `auto` or `on`.
+For [Zellij 0.45 and newer](https://zellij.dev/documentation/compatibility.html),
+`img-tui` actively queries KGP support and selects Kitty when both Zellij and
+the attached host terminal confirm it. Outer-terminal environment variables
+are not treated as proof, so an unsupported host or
+`support_kitty_graphics_protocol false` still falls back safely. Zellij does
+not currently support Kitty Unicode placeholders, so pdf-tui uses regular
+Kitty placements in this environment.
+
+Sixel remains disabled by default under Zellij unless
+`render.zellij_sixel` is set to `auto` or `on`. This option controls Sixel only
+and does not disable the automatically detected Kitty path.
 
 ## Kitty Placeholders
 
