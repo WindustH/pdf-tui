@@ -767,16 +767,19 @@ impl App {
         let Some(item) = scroll_layout.items.get(*item_index).copied() else {
           continue;
         };
-        let item_y = row_y.saturating_add(row.height.saturating_sub(item.height) / 2);
         let area = Rect::new(
           viewport.x.saturating_add(item.x),
-          item_y,
+          row_y,
           item.width.min(viewport.width.saturating_sub(item.x)),
           item.height,
         );
-        let y_cell_start = ((u32::from(item.full_height) * u32::from(item.slice_index))
-          / u32::from(item.slice_count.max(1)))
-        .min(u32::from(u16::MAX)) as u16;
+        let (y_cell_start, _) = layout::grid_slice_span(
+          item.grid_height,
+          item.slice_count,
+          item.slice_index,
+          item.full_height,
+        );
+        let y_cell_start = y_cell_start.min(u32::from(u16::MAX)) as u16;
         if let Some(display) =
           page_display_for_area(self, item.page_index, area, item.full_height, y_cell_start)
         {

@@ -123,16 +123,16 @@ pub(super) fn slice_spec_for_item(
   let target_height =
     u32::from(item.full_height.max(1)).saturating_mul(u32::from(cell_pixel_height.max(1)));
   let slice_count = item.slice_count.max(1);
-  let slice_cell_start =
-    (u64::from(item.full_height) * u64::from(item.slice_index)) / u64::from(slice_count);
-  let slice_cell_end = (u64::from(item.full_height)
-    * u64::from(item.slice_index.saturating_add(1)))
-    / u64::from(slice_count);
-  let slice_y = slice_cell_start
+  let (slice_cell_start, slice_cell_height) = layout::grid_slice_span(
+    item.grid_height,
+    slice_count,
+    item.slice_index,
+    item.full_height,
+  );
+  let slice_y = u64::from(slice_cell_start)
     .saturating_mul(u64::from(cell_pixel_height.max(1)))
     .min(u64::from(u32::MAX)) as u32;
-  let slice_height = slice_cell_end
-    .saturating_sub(slice_cell_start)
+  let slice_height = u64::from(slice_cell_height.max(1))
     .saturating_mul(u64::from(cell_pixel_height.max(1)))
     .max(1)
     .min(u64::from(u32::MAX)) as u32;
@@ -149,6 +149,7 @@ pub(super) fn slice_spec_for_item(
     cell_height: item.height,
     full_cell_width: item.full_width,
     full_cell_height: item.full_height,
+    grid_cell_height: item.grid_height,
     viewport_width: viewport.width,
     viewport_height: viewport.height,
     scroll_divisor: app.layout.scroll_divisor,

@@ -7,6 +7,10 @@ pub struct ScrollItem {
   pub page_index: usize,
   pub slice_index: u16,
   pub slice_count: u16,
+  /// Height in cells of the tallest page in this row group; the shared
+  /// slicing grid is derived from it so every page cuts at the same
+  /// absolute cell boundaries.
+  pub grid_height: u16,
   pub row_index: usize,
   pub x: u16,
   pub y: u32,
@@ -98,28 +102,33 @@ fn build_scroll_layout(
       })
       .collect::<Vec<_>>();
     let slice_height_limit = slice_height_limit(viewport_height, config.scroll_divisor);
-    let slice_counts = page_heights
-      .iter()
-      .map(|height| slice_count(*height, slice_height_limit))
-      .collect::<Vec<_>>();
-    let max_slice_count = slice_counts.iter().copied().max().unwrap_or(1);
+    // Pages with different aspect ratios must not slice independently:
+    // mixed slice sizes get vertically centered per row, which punches
+    // ragged blank bands into the shorter-sliced page while scrolling.
+    // Instead the row group shares the tallest page's slicing grid and
+    // every page cuts at the same absolute cell boundaries (clipped to
+    // its own height), so slices stay contiguous and aligned across
+    // columns; a shorter page simply runs out of content at its end.
+    let grid_height = page_heights.iter().copied().max().unwrap_or(1);
+    let max_slice_count = slice_count(grid_height, slice_height_limit);
 
     for slice_row in 0..max_slice_count {
       let mut row_height = 1_u16;
       let mut row_items = Vec::new();
       for (offset, index) in (row_start..page_end).enumerate() {
-        let slice_count = slice_counts[offset];
-        if slice_row >= slice_count {
+        let full_height = page_heights[offset];
+        let (_, height) = grid_slice_span(grid_height, max_slice_count, slice_row, full_height);
+        if height == 0 {
           continue;
         }
-        let full_height = page_heights[offset];
-        let height = slice_height_for(full_height, slice_count, slice_row).max(1);
+        let height = height.max(1);
         row_height = row_height.max(height);
         let col = index - row_start;
         row_items.push(ScrollItem {
           page_index: index,
           slice_index: slice_row,
-          slice_count,
+          slice_count: max_slice_count,
+          grid_height,
           row_index: rows.len(),
           x: x_offset.saturating_add((col as u16).saturating_mul(page_width.saturating_add(gap_x))),
           y,
@@ -134,9 +143,6 @@ fn build_scroll_layout(
       let row_start = items.len();
       for mut item in row_items {
         item.row_index = row_index;
-        item.y = item
-          .y
-          .saturating_add(u32::from(row_height.saturating_sub(item.height)) / 2);
         items.push(item);
       }
       let row_end = items.len();
@@ -288,13 +294,22 @@ fn slice_count(full_height: u16, limit: u16) -> u16 {
     .max(1)
 }
 
-pub fn slice_height_for(full_height: u16, slice_count: u16, slice_index: u16) -> u16 {
+pub fn grid_slice_span(
+  grid_height: u16,
+  slice_count: u16,
+  slice_index: u16,
+  full_height: u16,
+) -> (u32, u16) {
   let slice_count = slice_count.max(1);
   let slice_index = slice_index.min(slice_count.saturating_sub(1));
-  let start = (u32::from(full_height) * u32::from(slice_index)) / u32::from(slice_count);
-  let end =
-    (u32::from(full_height) * u32::from(slice_index.saturating_add(1))) / u32::from(slice_count);
-  end.saturating_sub(start).max(1).min(u32::from(u16::MAX)) as u16
+  let grid = u32::from(grid_height.max(1));
+  let full = u32::from(full_height.max(1));
+  let start = (grid * u32::from(slice_index) / u32::from(slice_count)).min(full);
+  let end = (grid * u32::from(slice_index.saturating_add(1)) / u32::from(slice_count)).min(full);
+  (
+    start,
+    end.saturating_sub(start).min(u32::from(u16::MAX)) as u16,
+  )
 }
 
 pub fn page_height_cells(
@@ -431,4 +446,95 @@ fn centered_offset(total: u16, count: usize, item: u16, gap: u16) -> u16 {
     .saturating_mul(item)
     .saturating_add(gap.saturating_mul(count.saturating_sub(1) as u16));
   total.saturating_sub(used) / 2
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn scroll_config(columns: u16) -> EffectiveLayoutConfig {
+    EffectiveLayoutConfig {
+      name: "test".into(),
+      strategy: "scroll".into(),
+      columns,
+      rows: 1,
+      scroll_divisor: 1,
+      gap_x: 0,
+      gap_y: 0,
+      show_border: false,
+      padding: 0,
+    }
+  }
+
+  #[test]
+  fn grid_slice_span_clips_to_page_height() {
+    // A 120-cell grid cut into 3 slices has boundaries 0/40/80/120.
+    assert_eq!(grid_slice_span(120, 3, 0, 120), (0, 40));
+    assert_eq!(grid_slice_span(120, 3, 2, 120), (80, 40));
+    // A shorter page clips to its own height: slice 1 stops at 60, slice 2
+    // is gone entirely.
+    assert_eq!(grid_slice_span(120, 3, 1, 60), (40, 20));
+    assert_eq!(grid_slice_span(120, 3, 2, 60), (60, 0));
+    // Out-of-range indices clamp to the last slice.
+    assert_eq!(
+      grid_slice_span(120, 3, 9, 60),
+      grid_slice_span(120, 3, 2, 60)
+    );
+  }
+
+  #[test]
+  fn mixed_height_pages_share_the_tallest_grid() {
+    let config = scroll_config(2);
+    let dims = [Some((100_u32, 300_u32)), Some((100_u32, 150_u32))];
+    let layout = build_scroll_layout(2, 80, 50, 40, &config, &dims, Some((1, 1)));
+
+    // The tallest page (120 cells, slice limit 50) dictates a 3-slice grid.
+    let tall: Vec<_> = layout.items.iter().filter(|i| i.page_index == 0).collect();
+    let short: Vec<_> = layout.items.iter().filter(|i| i.page_index == 1).collect();
+    assert_eq!(tall.len(), 3);
+    assert_eq!(short.len(), 2);
+    for item in &layout.items {
+      assert_eq!(item.slice_count, 3);
+      assert_eq!(item.grid_height, 120);
+    }
+    assert_eq!(
+      tall.iter().map(|i| i.height).collect::<Vec<_>>(),
+      vec![40, 40, 40]
+    );
+    assert_eq!(
+      short.iter().map(|i| i.height).collect::<Vec<_>>(),
+      vec![40, 20]
+    );
+
+    // Every slice row hosts both columns while both have content; the
+    // shorter page simply stops after its last slice.
+    assert_eq!(layout.rows.len(), 3);
+    assert_eq!(layout.rows[0].items.len(), 2);
+    assert_eq!(layout.rows[1].items.len(), 2);
+    assert_eq!(layout.rows[2].items.len(), 1);
+    assert_eq!(layout.rows[0].height, 40);
+    assert_eq!(layout.rows[1].height, 40);
+
+    // Columns align at the top of each row and slices stay contiguous
+    // within a page: no blank bands mid-page while scrolling.
+    assert_eq!(short[0].y, tall[0].y);
+    for pair in tall.windows(2) {
+      assert_eq!(pair[1].y, pair[0].y + u32::from(pair[0].height));
+    }
+    assert_eq!(short[1].y, short[0].y + 40);
+    assert_eq!(layout.total_height, 120);
+  }
+
+  #[test]
+  fn uniform_pages_keep_proportional_slicing() {
+    let config = scroll_config(2);
+    let dims = [Some((100_u32, 300_u32)), Some((100_u32, 300_u32))];
+    let layout = build_scroll_layout(2, 80, 50, 40, &config, &dims, Some((1, 1)));
+    assert_eq!(layout.items.len(), 6);
+    for item in &layout.items {
+      assert_eq!(item.slice_count, 3);
+      assert_eq!(item.grid_height, item.full_height);
+      assert_eq!(item.height, 40);
+    }
+  }
 }

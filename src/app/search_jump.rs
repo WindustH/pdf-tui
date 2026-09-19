@@ -126,7 +126,6 @@ impl App {
 #[derive(Debug, Clone, Copy)]
 struct SearchScrollTarget {
   row_index: usize,
-  item_height: u16,
   local_y: f64,
 }
 
@@ -163,7 +162,6 @@ fn search_target_scroll_item(
     if distance < best_distance {
       best = Some(SearchScrollTarget {
         row_index: item.row_index,
-        item_height: item.height,
         local_y,
       });
       best_distance = distance;
@@ -189,8 +187,7 @@ fn search_target_screen_y(
   for (position, row_index) in visible_rows.iter().copied().enumerate() {
     let row = scroll_layout.rows.get(row_index)?;
     if row_index == target.row_index {
-      let item_y = f64::from(row.height.saturating_sub(target.item_height)) / 2.0;
-      return Some(row_y + item_y + target.local_y);
+      return Some(row_y + target.local_y);
     }
     row_y += f64::from(row.height);
     if position + 1 < visible_rows.len() {
@@ -201,13 +198,16 @@ fn search_target_screen_y(
 }
 
 fn scroll_item_fraction_bounds(item: ScrollItem) -> (f64, f64) {
-  let full_height = u32::from(item.full_height.max(1));
-  let slice_count = u32::from(item.slice_count.max(1));
-  let slice_index = u32::from(item.slice_index.min(item.slice_count.saturating_sub(1)));
-  let top_cells = full_height.saturating_mul(slice_index) / slice_count;
-  let bottom_cells = full_height.saturating_mul(slice_index.saturating_add(1)) / slice_count;
+  let full_height = f64::from(item.full_height.max(1));
+  let (top_cells, height_cells) = layout::grid_slice_span(
+    item.grid_height,
+    item.slice_count,
+    item.slice_index,
+    item.full_height,
+  );
+  let bottom_cells = top_cells.saturating_add(u32::from(height_cells));
   (
-    f64::from(top_cells) / f64::from(full_height.max(1)),
-    f64::from(bottom_cells.max(top_cells.saturating_add(1))) / f64::from(full_height.max(1)),
+    top_cells as f64 / full_height,
+    bottom_cells.max(top_cells.saturating_add(1)) as f64 / full_height,
   )
 }

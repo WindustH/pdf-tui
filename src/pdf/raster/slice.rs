@@ -5,6 +5,7 @@ use tokio::fs;
 use tracing::debug;
 
 use crate::cache;
+use crate::layout::grid_slice_span;
 
 use super::super::{
   document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, modified_nanos},
@@ -84,6 +85,7 @@ async fn render_page_slice_image_with_batch_mode(
     cell_height: spec.cell_height,
     full_cell_width: spec.full_cell_width,
     full_cell_height: spec.full_cell_height,
+    grid_cell_height: spec.grid_cell_height,
     viewport_width: spec.viewport_width,
     viewport_height: spec.viewport_height,
     scroll_divisor: spec.scroll_divisor,
@@ -234,6 +236,7 @@ fn page_slice_metadata(
     cell_height: spec.cell_height,
     full_cell_width: spec.full_cell_width,
     full_cell_height: spec.full_cell_height,
+    grid_cell_height: spec.grid_cell_height,
     viewport_width: spec.viewport_width,
     viewport_height: spec.viewport_height,
     scroll_divisor: spec.scroll_divisor,
@@ -249,26 +252,29 @@ fn sibling_slice_specs(spec: PageSliceSpec) -> Vec<PageSliceSpec> {
     .unwrap_or(1)
     .max(1);
   (0..spec.slice_count)
-    .map(|slice_index| {
-      let slice_cell_start =
-        (u64::from(spec.full_cell_height) * u64::from(slice_index)) / u64::from(spec.slice_count);
-      let slice_cell_end = (u64::from(spec.full_cell_height)
-        * u64::from(slice_index.saturating_add(1)))
-        / u64::from(spec.slice_count);
-      let slice_y = slice_cell_start
+    .filter_map(|slice_index| {
+      let (slice_cell_y, slice_cell_height) = grid_slice_span(
+        spec.grid_cell_height,
+        spec.slice_count,
+        slice_index,
+        spec.full_cell_height,
+      );
+      if slice_cell_height == 0 {
+        return None;
+      }
+      let slice_y = u64::from(slice_cell_y)
         .saturating_mul(u64::from(cell_pixel_height))
         .min(u64::from(u32::MAX)) as u32;
-      let slice_height = slice_cell_end
-        .saturating_sub(slice_cell_start)
+      let slice_height = u64::from(slice_cell_height)
         .saturating_mul(u64::from(cell_pixel_height))
         .max(1)
         .min(u64::from(u32::MAX)) as u32;
-      PageSliceSpec {
+      Some(PageSliceSpec {
         slice_index,
         slice_y,
         slice_height,
         ..spec
-      }
+      })
     })
     .collect()
 }

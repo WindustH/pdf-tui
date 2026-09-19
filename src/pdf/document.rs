@@ -87,6 +87,10 @@ pub struct PageSliceSpec {
   pub cell_height: u16,
   pub full_cell_width: u16,
   pub full_cell_height: u16,
+  /// Shared slicing grid height (tallest page in the row group) in cells;
+  /// slice boundaries are fractions of this, clipped to each page's own
+  /// full_cell_height.
+  pub grid_cell_height: u16,
   pub viewport_width: u16,
   pub viewport_height: u16,
   pub scroll_divisor: u16,
@@ -111,6 +115,8 @@ pub struct PageSliceMetadata {
   pub cell_height: u16,
   pub full_cell_width: u16,
   pub full_cell_height: u16,
+  #[serde(default)]
+  pub grid_cell_height: u16,
   pub viewport_width: u16,
   pub viewport_height: u16,
   pub scroll_divisor: u16,
@@ -140,6 +146,7 @@ impl PageSliceSpec {
       cell_height: self.cell_height.max(1),
       full_cell_width: self.full_cell_width.max(1),
       full_cell_height: self.full_cell_height.max(1),
+      grid_cell_height: self.grid_cell_height.max(1),
       viewport_width: self.viewport_width.max(1),
       viewport_height: self.viewport_height.max(1),
       scroll_divisor: self.scroll_divisor.max(1),
@@ -388,6 +395,7 @@ fn hash_slice_spec(hasher: &mut Sha256, spec: PageSliceSpec) {
   hasher.update(spec.cell_height.to_le_bytes());
   hasher.update(spec.full_cell_width.to_le_bytes());
   hasher.update(spec.full_cell_height.to_le_bytes());
+  hasher.update(spec.grid_cell_height.to_le_bytes());
   hasher.update(spec.viewport_width.to_le_bytes());
   hasher.update(spec.viewport_height.to_le_bytes());
   hasher.update(spec.scroll_divisor.to_le_bytes());
