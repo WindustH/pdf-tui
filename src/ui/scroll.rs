@@ -52,10 +52,13 @@ pub(super) fn draw_scroll(
       let Some(item) = scroll_layout.items.get(*item_index).copied() else {
         continue;
       };
-      let item_y = row_y.saturating_add(row.height.saturating_sub(item.height) / 2);
+      // Top-align slices within the row: under the shared slicing grid a
+      // shorter slice is always a page's remainder (its last slice), so
+      // centering it would open a blank seam between it and the previous
+      // slice instead of leaving the slack at the page end.
       let item_area = Rect::new(
         area.x.saturating_add(item.x),
-        item_y,
+        row_y,
         item.width.min(area.width.saturating_sub(item.x)),
         item.height,
       );
