@@ -865,6 +865,12 @@ impl App {
     match result {
       Ok(layout) => {
         self.layout = layout;
+        // Drop the scroll layout built for the previous geometry: it is
+        // stale now, and applying the preserved progress against its row
+        // indices would land the new layout at an arbitrary position.
+        // Clearing it routes the progress through `pending_progress`,
+        // which is resolved once the new scroll layout is built.
+        self.last_scroll_layout = None;
         self.scroll = 0;
         self.grid_start_page = 0;
         self.focused_page = 0;

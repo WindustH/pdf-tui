@@ -150,14 +150,14 @@ fn progress_for_scroll_row(
       };
       let full_width = f64::from(item.full_width.max(1));
       let full_height = f64::from(item.full_height.max(1));
-      let slice_count = item.slice_count.max(1);
-      let top_cells =
-        (u32::from(item.full_height) * u32::from(item.slice_index)) / u32::from(slice_count);
-      let bottom_cells = (u32::from(item.full_height)
-        * u32::from(item.slice_index.saturating_add(1)))
-        / u32::from(slice_count);
+      let (top_cells, height_cells) = crate::layout::grid_slice_span(
+        item.grid_height,
+        item.slice_count,
+        item.slice_index,
+        item.full_height,
+      );
       let top = f64::from(top_cells) / full_height;
-      let bottom = f64::from(bottom_cells) / full_height;
+      let bottom = f64::from(top_cells.saturating_add(u32::from(height_cells))) / full_height;
       let width_fraction = f64::from(item.width.max(1)) / full_width;
       let height_fraction = (bottom - top).max(0.0);
       let weight = width_fraction * height_fraction;
@@ -235,6 +235,7 @@ fn progress_for_grid_start(start: usize, capacity: usize, page_count: usize) -> 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::layout::{ScrollItem, ScrollRow};
 
   #[test]
   fn grid_progress_uses_only_reachable_row_starts() {
@@ -248,5 +249,43 @@ mod tests {
   fn progress_is_zero_based() {
     assert_eq!(progress_for_grid_start(0, 1, 10), Some(0.5));
     assert_eq!(best_grid_start_for_progress(0.0, 1, 1, 10), 0);
+  }
+
+  #[test]
+  fn scroll_progress_uses_shared_grid_slice_bounds() {
+    // A 60-cell page inside a row group whose tallest page dictates a
+    // 120-cell, 3-slice grid (boundaries 0/40/80/120). Its middle slice
+    // covers cells 40..60, i.e. fractions 2/3..1 of the page, not the
+    // 1/3..2/3 that per-page proportional slicing would report.
+    let item = ScrollItem {
+      page_index: 1,
+      slice_index: 1,
+      slice_count: 3,
+      grid_height: 120,
+      row_index: 0,
+      x: 0,
+      y: 40,
+      width: 40,
+      height: 20,
+      full_width: 40,
+      full_height: 60,
+    };
+    let layout = ScrollLayout {
+      items: vec![item],
+      rows: vec![ScrollRow {
+        height: 20,
+        gap_after: 0,
+        items: vec![0],
+      }],
+      total_height: 60,
+    };
+    let progress = progress_for_scroll_row(&layout, 0, 50, 1).unwrap();
+    assert!(
+      (progress - 11.0 / 6.0).abs() < 1e-9,
+      "progress = {progress}"
+    );
+    // The jump chain inverts the same math: that row is the best landing
+    // spot for the progress it reports.
+    assert_eq!(best_scroll_row_for_progress(&layout, 50, 1, 11.0 / 6.0), 0);
   }
 }
