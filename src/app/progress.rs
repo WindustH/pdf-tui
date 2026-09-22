@@ -7,6 +7,21 @@ impl App {
     self.set_progress_target(progress);
   }
 
+  /// Restores a position previously saved for this document. Behaves
+  /// like the explicit `--progress` override, just sourced from the
+  /// progress store instead of the command line.
+  pub fn set_document_progress_target(&mut self, progress: f64) {
+    self.set_progress_target(progress);
+  }
+
+  /// Position to persist on exit, or `None` for empty documents where
+  /// there is nothing worth remembering.
+  pub fn save_progress_on_exit(&self) -> Option<f64> {
+    (self.document.page_count > 0)
+      .then(|| self.current_progress())
+      .flatten()
+  }
+
   pub(super) fn current_progress(&self) -> Option<f64> {
     if self.document.page_count == 0 {
       return Some(0.0);

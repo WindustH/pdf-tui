@@ -132,6 +132,7 @@ Behavior fields:
 - `auto_refresh`: enable a background watcher for the opened PDF
 - `auto_refresh_poll_ms`: file change polling interval
 - `auto_refresh_min_interval_ms`: minimum interval between automatic refresh requests
+- `remember_reading_position`: reopen documents at the position where they were last closed
 - `bookmarks_left_ratio`: left bookmarks panel ratio
 - `bookmarks_right_ratio`: right preview panel ratio
 - `search_left_ratio`: left search panel ratio
@@ -148,3 +149,11 @@ Frame-synced navigation is configured per view. Defaults are
 free-running navigation in that view.
 
 The default bookmarks and search panel ratio is `2:1`.
+
+`remember_reading_position` is disabled by default. When enabled, the last
+reading position of each document is saved in `progress.toml` inside the cache
+directory on exit and restored on the next open. Positions are keyed by path,
+file size, and modification time, so editing a PDF forgets its stale position
+instead of restoring one that no longer matches. `--progress` on the command
+line still takes precedence, and `clear-cache` keeps the remembered positions
+intact.

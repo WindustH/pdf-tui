@@ -8,6 +8,7 @@ mod layout;
 mod logging;
 mod metadata;
 mod pdf;
+mod progress_store;
 mod render;
 mod search;
 mod selection;
@@ -54,6 +55,17 @@ struct Cli {
   /// Optional layout override: scroll <columns> <scroll_divisor> or grid <rows> <columns>.
   #[arg(trailing_var_arg = true)]
   layout: Vec<String>,
+}
+
+/// Identity of the opened file for progress storage: a changed size or
+/// mtime invalidates the remembered position instead of restoring a
+/// stale one after the PDF is edited.
+mod document {
+  #[derive(Debug, Clone, Copy)]
+  pub struct Identity {
+    pub size_bytes: u64,
+    pub modified_nanos: u128,
+  }
 }
 
 #[tokio::main]
@@ -118,6 +130,31 @@ async fn main() -> Result<()> {
     dpi = document.dpi,
     "opened pdf document"
   );
+  let document_identity = {
+    let metadata = std::fs::metadata(&document.path)
+      .with_context(|| format!("failed to stat {}", document.path.display()))?;
+    document::Identity {
+      size_bytes: metadata.len(),
+      modified_nanos: metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default(),
+    }
+  };
+  let remember_position =
+    settings.config.behavior.remember_reading_position && document_identity.modified_nanos > 0;
+  let document_progress_target = if remember_position {
+    progress_store::load_matching(
+      &settings.cache_dir,
+      &document.path,
+      document_identity.size_bytes,
+      document_identity.modified_nanos,
+    )
+  } else {
+    None
+  };
   let mut page_store = PageStore::new(document.clone(), settings.config.render.max_concurrent);
 
   let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
@@ -134,6 +171,8 @@ async fn main() -> Result<()> {
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
   if let Some(progress) = cli.progress {
     app.set_user_progress_target(progress);
+  } else if let Some(document_progress) = document_progress_target {
+    app.set_document_progress_target(document_progress);
   }
 
   let native_config = NativeImageConfig {
@@ -217,6 +256,22 @@ async fn main() -> Result<()> {
     }
   }
   tui.restore()?;
+  if remember_position
+    && let Some(progress) = app.save_progress_on_exit()
+    && let Err(error) = progress_store::upsert(
+      &app.settings.cache_dir,
+      progress_store::ProgressEntry::new(
+        &app.document.path,
+        progress,
+        document_identity.size_bytes,
+        document_identity.modified_nanos,
+        app.document.page_count,
+      ),
+    )
+    .context("failed to save reading progress")
+  {
+    warn!(%error, "could not persist reading progress");
+  }
   Ok(())
 }
 

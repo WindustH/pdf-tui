@@ -10,6 +10,9 @@ pub struct BehaviorConfig {
   pub auto_refresh: bool,
   pub auto_refresh_poll_ms: u64,
   pub auto_refresh_min_interval_ms: u64,
+  /// Restore the last reading position when reopening a document, and
+  /// save it on exit. Off by default: switching it on is opt-in.
+  pub remember_reading_position: bool,
   pub bookmarks_left_ratio: u16,
   pub bookmarks_right_ratio: u16,
   pub search_left_ratio: u16,
@@ -26,6 +29,7 @@ impl Default for BehaviorConfig {
       auto_refresh: false,
       auto_refresh_poll_ms: 500,
       auto_refresh_min_interval_ms: 1500,
+      remember_reading_position: false,
       bookmarks_left_ratio: 2,
       bookmarks_right_ratio: 1,
       search_left_ratio: 2,
