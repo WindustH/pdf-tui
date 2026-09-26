@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Upper bound for page rows, page columns, and the scroll divisor. Larger
+/// values cannot fit a terminal anyway, and a grid allocates one slot per
+/// rows x columns cell, so unbounded values could exhaust memory.
+const MAX_LAYOUT_COUNT: u16 = 64;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutConfig {
@@ -286,9 +291,9 @@ fn normalize_layout_strategy(strategy: &str) -> String {
 
 fn normalize_effective_layout(layout: &mut EffectiveLayoutConfig) {
   layout.strategy = normalize_layout_strategy(&layout.strategy);
-  layout.columns = layout.columns.max(1);
-  layout.rows = layout.rows.max(1);
-  layout.scroll_divisor = layout.scroll_divisor.max(1);
+  layout.columns = layout.columns.clamp(1, MAX_LAYOUT_COUNT);
+  layout.rows = layout.rows.clamp(1, MAX_LAYOUT_COUNT);
+  layout.scroll_divisor = layout.scroll_divisor.clamp(1, MAX_LAYOUT_COUNT);
   if layout.strategy == "scroll" {
     layout.rows = 1;
   }
@@ -300,10 +305,10 @@ fn apply_layout_param(
   value: &str,
 ) -> Result<(), String> {
   match param.trim().to_ascii_lowercase().as_str() {
-    "columns" | "column" | "cols" => layout.columns = parse_layout_u16(param, value)?,
-    "rows" | "row" => layout.rows = parse_layout_u16(param, value)?,
+    "columns" | "column" | "cols" => layout.columns = parse_layout_count(param, value)?,
+    "rows" | "row" => layout.rows = parse_layout_count(param, value)?,
     "scroll_divisor" | "scroll-divisor" | "divisor" | "step" | "chunk" => {
-      layout.scroll_divisor = parse_layout_u16(param, value)?
+      layout.scroll_divisor = parse_layout_count(param, value)?
     }
     "gap_x" | "gap-x" => layout.gap_x = parse_layout_u16(param, value)?,
     "gap_y" | "gap-y" => layout.gap_y = parse_layout_u16(param, value)?,
@@ -322,6 +327,14 @@ fn parse_layout_u16(param: &str, value: &str) -> Result<u16, String> {
     .map_err(|_| format!("{param} must be a non-negative integer"))?;
   if parsed == 0 {
     return Err(format!("{param} must be greater than zero"));
+  }
+  Ok(parsed)
+}
+
+fn parse_layout_count(param: &str, value: &str) -> Result<u16, String> {
+  let parsed = parse_layout_u16(param, value)?;
+  if parsed > MAX_LAYOUT_COUNT {
+    return Err(format!("{param} must be at most {MAX_LAYOUT_COUNT}"));
   }
   Ok(parsed)
 }
@@ -386,4 +399,28 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
   presets.insert("scroll".to_string(), LayoutPresetConfig::scroll());
   presets.insert("grid".to_string(), LayoutPresetConfig::grid());
   presets
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn layout_counts_are_bounded() {
+    let mut config = LayoutConfig::default();
+    let error = config
+      .set_active_from_args("grid", &["65535", "65535"])
+      .unwrap_err();
+    assert!(error.contains("at most"), "{error}");
+    let layout = config.set_active_from_args("grid", &["3", "4"]).unwrap();
+    assert_eq!((layout.rows, layout.columns), (3, 4));
+
+    // Oversized values from config.toml are clamped rather than rejected.
+    let preset = config.presets.get_mut("grid").unwrap();
+    preset.params.clear();
+    preset.rows = 1000;
+    preset.columns = 0;
+    let layout = config.set_active_from_args("grid", &[]).unwrap();
+    assert_eq!((layout.rows, layout.columns), (MAX_LAYOUT_COUNT, 1));
+  }
 }

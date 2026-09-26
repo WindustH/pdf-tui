@@ -1,91 +1,71 @@
 # Cache And Logs
 
-Cache and logs are stored under:
+## Location
 
-- `~/.cache/pdf-tui/`
+The cache directory is `$XDG_CACHE_HOME/pdf-tui`, or `$HOME/.cache/pdf-tui`
+when `XDG_CACHE_HOME` is unset (also on macOS); on Windows without either
+variable it is `%LOCALAPPDATA%\pdf-tui`.
 
-Important subdirectories:
+| Path | Contents |
+| --- | --- |
+| `pages/` | Page and slice PNGs; `.toml` files describe slices |
+| `render/` | Terminal output, zstd-compressed (`*.ansi`) |
+| `text/` | Search indexes (`*.toml.zst`) |
+| `search-highlight/` | Pages with a search match inverted |
+| `selection/` | Selection crops and pages with selection marks |
+| `progress.toml` | Remembered reading positions (`behavior.remember_reading_position`) |
+| `logs/` | Run logs |
+| `runtime/` | One lock file per running instance |
+| `editor/`, `bookmarks/` | Temporary files while editing metadata or bookmarks |
 
-- `pages/`: PDF page and slice PNG cache
-- `render/`: compressed terminal render stream cache
-- `text/`: compressed embedded-text search index cache
-- `search-highlight/`: search preview highlight PNG cache
-- `selection/`: selection anchor marker PNGs and final selection crop PNGs
-- `logs/run-*.log`: per-process run logs
-- `logs/latest.log`: symlink or pointer to the newest run log
+Backends write their output to `pdf-tui/pages/` in the system temporary
+directory first (usually `/tmp`) and move finished files into the cache.
 
-## Cache Cleanup
+## Limits And Cleanup
 
-Runtime rendering uses a multi-level cache:
+Each cache entry has a `.used` marker whose modification time records when
+the entry was last used (refreshed at most once a minute). Cleanup removes the
+least recently used entries first:
 
-- L1: raw rendered terminal streams in memory
-- L2: compressed rendered terminal streams in memory
-- L3: compressed search indexes plus page PNG and terminal stream files on disk
-- L4: cache miss path that regenerates data from the PDF or PNG
+- At startup the whole cache is trimmed to `render.cache_max_bytes` (512 MiB
+  by default; `0` disables it). Leftover markers, slice descriptions, and
+  temporary files of entries that no longer exist are removed as well.
+- `search-highlight/` and `selection/` are trimmed to
+  `render.search_highlight_cache_max_bytes` and
+  `render.selection_cache_max_bytes` (64 MiB each) whenever an image is added.
 
-L4 is not a stored cache and has no size setting.
+Page and terminal caches can therefore grow past the limit during a long
+session; the next start trims them.
 
-Preloading feeds those cache levels by distance. Farther candidates warm page
-PNGs on disk, nearer scroll candidates warm slice PNGs, and the nearest
-candidates warm terminal streams in the render cache and memory cache. Visible
-work always has higher scheduler priority than queued preloads.
+In memory, terminal output is kept up to `render.raw_memory_cache_max_bytes`
+(32 MiB); older protocol output is compressed and kept up to
+`render.compressed_memory_cache_max_bytes` (128 MiB) when
+`render.memory_compression` is on. Decoded images for protocol rendering use
+up to `render.prepared_memory_cache_max_bytes` (128 MiB).
 
-The cache limits are configured with:
+`:clear-cache` deletes `pages/`, `render/`, `text/`, `search-highlight/`, and
+`selection/`. Logs and reading positions are kept.
 
-```toml
-[render]
-raw_memory_cache_max_bytes = 33554432
-compressed_memory_cache_max_bytes = 134217728
-prepared_memory_cache_max_bytes = 134217728
-cache_max_bytes = 536870912
-```
+## Several Instances
 
-When L1 exceeds its limit, cold protocol streams are compressed into L2 when
-`memory_compression` is enabled. When L2 or L3 exceeds its limit, older entries
-are removed. L3 uses LRU marker files on disk.
+Instances can share one cache directory. Every entry is written to a
+temporary file next to it and then moved into place atomically (`rename` on
+Unix, `MoveFileExW` on Windows), so readers never see partial files. Work on
+the same entry is serialized with lock files held by an OS file lock (`flock`
+on Unix, `LockFileEx` on Windows); the lock of a process that died is
+reclaimed automatically.
 
-Cache files are written through per-entry lock files and temporary siblings
-before being atomically moved into place. Multiple `pdf-tui` instances can share
-the same cache directory without reading half-written PNG, text-index, or
-terminal-stream cache files. Automatic cache trimming is skipped while another
-live `pdf-tui` instance is detected, so one reader does not delete files another
-reader may still be displaying.
-
-The instance and cache-entry lock files are portable across Linux, macOS, and
-Windows. A live lock is protected by an OS file lock: `flock` on Unix platforms
-and `LockFileEx` on Windows. If a process exits or crashes, the kernel releases
-that file lock, so later instances can reclaim the leftover `.lock` file. The
-pid recorded in the lock file is still used as compatibility metadata and to
-avoid reclaiming very recent legacy locks. Cache replacement uses POSIX
-`rename` on Unix platforms and `MoveFileExW` with replace/write-through flags
-on Windows, so readers only observe complete old or new cache entries.
-
-Clear cache from inside the TUI:
-
-```text
-:clear-cache
-```
-
-This clears cached page PNGs, rendered terminal streams, search text indexes,
-search highlight PNGs, selection PNGs, and LRU marker files. It does not delete
-logs. When another `pdf-tui` instance is running, `clear-cache` is refused
-instead of deleting shared cache files out from under that instance.
-
-Selection previews and `Y` copies cache only final cropped selection PNGs.
-Poppler and Pdfium can render that crop directly from the PDF. Mutool falls
-back through a temporary full-page render because the installed `mutool draw`
-CLI does not expose a reliable crop rectangle option; that temporary page is
-written under the temporary work directory and is not kept in the page cache.
+While another instance runs, startup cleanup and log removal are skipped and
+`:clear-cache` is refused, so no instance deletes files another one is
+showing.
 
 ## Logs
 
-`pdf-tui` prints the active log path to stderr at startup. Each instance writes
-to a unique `logs/run-*.log` file, and `logs/latest.log` points to the newest
-run. On Unix this pointer is a symlink; on Windows it is a small text file
-containing the active log path. The pointer is updated through the same
-temporary-file replacement path as cache entries. When no other instance is
-active, startup removes older run logs; when multiple instances are active,
-existing run logs are left alone so active file handles are not truncated or
-removed. Logs include PDF page rendering, terminal render requests, cache
-hits/misses, preload behavior, and failures from external tools such as
-`pdfinfo`, the selected PDF raster backend, or Chafa.
+Each run writes `logs/run-<pid>-<time>.log`; the path is printed when
+`pdf-tui` starts. `logs/latest.log` points to the newest run (a symlink on
+Unix, a file containing the path on Windows). When no other instance is
+running, older logs are deleted at startup.
+
+Logs are written at debug level: page and slice renders, terminal renders,
+cache use, preloading, and failures of external tools such as `pdfinfo`,
+the raster backend, or Chafa. Attach the log when reporting a problem.

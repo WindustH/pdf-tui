@@ -53,17 +53,13 @@ fn update_latest_log_link(log_dir: &Path, log_path: &Path) {
   let latest = log_dir.join("latest.log");
   #[cfg(unix)]
   {
-    use std::os::unix::fs::symlink;
     let target = log_path
       .file_name()
       .map(PathBuf::from)
       .unwrap_or_else(|| log_path.to_path_buf());
-    let temp = crate::cache::temp_sibling_path(&latest);
-    let _ = std::fs::remove_file(&temp);
-    if symlink(target, &temp).is_ok() {
-      let _ = std::fs::rename(&temp, &latest);
-      let _ = std::fs::remove_file(&temp);
-    }
+    let _ = crate::cache::write_file_atomic_sync(&latest, |temp| {
+      std::os::unix::fs::symlink(&target, temp)
+    });
   }
   #[cfg(not(unix))]
   {

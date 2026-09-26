@@ -1,113 +1,78 @@
 # Rendering
 
-Rendering has two stages:
+A page goes through three stages, each with its own background jobs and
+cache:
 
-1. The selected PDF raster backend rasterizes PDF pages into PNG files.
-2. `img-tui` or Chafa converts those PNG files into terminal output.
+1. **Rasterizing**: the raster backend renders the page to a PNG at the pixel
+   size of its terminal area (cell count times cell size). Scroll layouts
+   then cut the page PNG into slice PNGs.
+2. **Marking** (only when needed): a copy of the PNG gets the search
+   highlight or selection marks drawn in.
+3. **Terminal rendering**: the PNG becomes terminal output, either escape
+   sequences of a graphics protocol or Chafa text. See
+   [Terminal Graphics](terminal-graphics.md).
 
-Page PNGs are cached under:
+While a stage runs, the status line shows what is being rendered. With a
+graphics protocol the previous images stay on screen meanwhile.
 
-- `~/.cache/pdf-tui/pages/`
+## Raster Backends
 
-Page PNGs are disk-backed. Runtime state keeps only lightweight page metadata
-and short-lived decode buffers used while slicing or preparing terminal output.
-Temporary backend output is written under the system temp directory, usually
-`/tmp/pdf-tui/`, before being copied or renamed into the persistent cache.
-Persistent cache entries are written through lock files and temporary sibling
-files before being atomically moved into place, so concurrent `pdf-tui`
-instances do not consume partially-written page, slice, text, highlight, or
-terminal-stream cache files. Unix platforms use atomic same-directory rename;
-Windows uses `MoveFileExW` replacement because the standard rename API cannot
-overwrite an existing destination there.
+`render.pdf_raster_backend` selects the backend:
 
-`render.pdf_raster_backend` selects `pdfium`, `mutool`, or `poppler`.
-`render.pdf_raster_batch_pages` controls how many consecutive pages one raster
-batch may render. Batching reduces process startup and PDF reread costs during
-sequential reading and preloading.
+- `pdfium` (default): renders in-process through the Pdfium library. It is
+  loaded from `render.pdfium_library_path`, then `PDF_TUI_PDFIUM_LIBRARY_PATH`,
+  then `pdfium/lib/` next to the executable or one directory up, then the
+  system library path. A path may name the library file or its directory.
+  The Homebrew formula uses the environment variable to bundle Pdfium.
+- `poppler`: runs `pdftoppm`.
+- `mutool`: runs `mutool draw` with the `mutool_*` settings.
 
-The Pdfium backend uses a dynamic `libpdfium` library. `pdf-tui` looks at
-`render.pdfium_library_path`, then `PDF_TUI_PDFIUM_LIBRARY_PATH`, then packaged
-libraries installed next to the executable before falling back to the system
-library search path. The Homebrew formula uses this path to bundle Pdfium
-without writing user config.
+`render.pdf_raster_batch_pages` consecutive pages are rendered together, which
+saves process starts and PDF parsing while reading sequentially.
 
-The Mutool backend runs `mutool draw`. `render.mutool_threads`,
-`render.mutool_band_height`, and `render.mutool_parallel` control its threaded
-banded rendering mode.
+`pdfinfo` is always needed: it provides the page count and page sizes before
+anything is drawn.
 
-Rendered terminal streams are cached under:
+## Scheduling And Preloading
 
-- `~/.cache/pdf-tui/render/`
+Rasterizing and terminal rendering each run at most `render.max_concurrent`
+jobs at a time. Work for what is on screen goes first; preloads never take
+the last slot. A queued preload is promoted when its page becomes visible, and
+search previews queued for an outdated query are dropped.
 
-Viewer pages, grid pages, bookmark previews, and search-highlight previews all
-go through the same terminal stream render cache after their source PNG exists.
-Selection previews also go through that terminal stream cache, but their source
-PNG is the cropped selection image rather than a cached full-page PNG.
+Preloading is tiered by distance from the view:
 
-At runtime, already-rendered terminal streams are first kept in raw memory
-(L1). Cold protocol streams can be compressed in memory (L2). If both memory
-levels miss, `pdf-tui` reads the compressed disk cache (L3). A miss at all
-levels regenerates the data (L4).
+- `render.preload_ahead`/`preload_behind`: page PNGs (outer ring)
+- `render.preload_slice_ahead`/`preload_slice_behind`: scroll slice PNGs
+- `render.preload_terminal_ahead`/`preload_terminal_behind`: terminal output
+  (nearest ring)
 
-Embedded-text search indexes are cached under:
+In scroll layouts the distances count scroll rows, in grids pages, and in the
+bookmark, search, and selection views list entries.
 
-- `~/.cache/pdf-tui/text/`
+## Caches
 
-The search cache avoids rerunning `pdftotext -tsv` when the PDF has not changed.
-Search-highlight preview PNGs are cached under `~/.cache/pdf-tui/search-highlight/`
-and limited by `render.search_highlight_cache_max_bytes`.
+Results are cached on disk, so revisited pages appear quickly, also in later
+sessions:
 
-Selection crop PNGs are cached under `~/.cache/pdf-tui/selection/` and limited
-by `render.selection_cache_max_bytes`. Poppler crops with `pdftoppm` crop
-arguments. Pdfium renders into a crop-sized bitmap with an origin offset. Mutool
-uses a temporary full-page fallback because its CLI crop support is not
-reliable enough for this path. Selection previews are rendered at the crop
-pixel size needed by the current terminal area; `render.selection_image_max_pixels`
-only limits PNGs copied with `Y`.
+- `pages/`: page and slice PNGs, plus a `.toml` description of each slice
+- `render/`: terminal output, zstd-compressed (`*.ansi`)
+- `text/`: search indexes
+- `search-highlight/` and `selection/`: marked copies and selection crops
 
-## Page And Slice Cache
+Cache entries are keyed by the file's path, size, and modification time, the
+pixel size, the backend, and the relevant settings, so a changed PDF or
+setting never reuses stale images. Terminal output is also kept in memory:
+recent renders as they are (`raw_memory_cache_max_bytes`), older protocol
+renders compressed (`compressed_memory_cache_max_bytes`).
 
-Grid mode requests whole-page PNGs sized to the target terminal area.
+Details on sizes, cleanup, and sharing between instances are in
+[Cache And Logs](cache-and-logs.md).
 
-Scroll mode requests page slices. Each slice records metadata such as page
-index, slice index, slice count, target dimensions, viewport dimensions, and
-scroll divisor. Slice cache keys include those values so incompatible slices
-are not reused.
+## Selections
 
-## Terminal Render Cache
-
-Terminal render cache files use zstd compression. Kitty uploads that need a
-separate refresh placement are stored as a framed payload containing both the
-upload bytes and refresh bytes.
-
-The cache intentionally stores terminal stream data, not transient screen
-state. Runtime-only placement state is managed by `img-tui`.
-
-## Preloading
-
-Preloading is tiered by distance from the visible region:
-
-- `render.preload_ahead` and `render.preload_behind` warm the outer page PNG
-  cache and trigger batched raster backend output.
-- `render.preload_slice_ahead` and `render.preload_slice_behind` warm nearer
-  scroll-slice PNGs.
-- `render.preload_terminal_ahead` and `render.preload_terminal_behind` warm the
-  nearest terminal streams and memory cache entries.
-
-Visible requests use the highest scheduler priority. The page/slice scheduler
-orders work as visible requests, then slice preloads, then page PNG preloads.
-The terminal-render scheduler orders work as visible requests, then terminal
-stream preloads. A queued preload is promoted when it becomes needed by the
-visible viewport.
-
-Search preview preloading waits for `render.search_preload_idle_ms` after text
-input so filtering does not keep starting work for short-lived result sets.
-Moving between search results skips that delay and preloads around the current
-selection immediately.
-
-## Protocol Rendering
-
-Native protocol output is not written into Ratatui cells. `img-tui` tracks
-protocol overlays and writes image protocol bytes after the Ratatui frame is
-flushed. This avoids raw escape sequences appearing as text and prevents blank
-intermediate frames when images are replaced.
+The selection view and `Y` render just the selected region: Poppler with
+`pdftoppm` crop options and Pdfium into a crop-sized bitmap. Mutool has no
+reliable crop option, so a temporary full page is rendered and cropped.
+Previews are rendered at the size the terminal area needs;
+`render.selection_image_max_pixels` limits only the copied PNG.

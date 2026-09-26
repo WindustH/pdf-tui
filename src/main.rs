@@ -1,12 +1,17 @@
 mod app;
+mod background;
 mod bookmarks;
 mod cache;
 mod clipboard;
 mod config;
 mod event;
+mod event_loop;
+mod geometry;
+mod job_queue;
 mod layout;
 mod logging;
 mod metadata;
+mod overlay;
 mod pdf;
 mod progress_store;
 mod render;
@@ -15,31 +20,25 @@ mod selection;
 mod terminal;
 mod ui;
 
-use std::{
-  fs,
-  path::PathBuf,
-  sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-  },
-  thread,
-  time::{Duration, Instant, SystemTime},
-};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use crossterm::event as crossterm_event;
-use framework_tui::edit_text_in_editor;
-use img_tui::{NativeImageConfig, RenderMode, capability, native_image};
+use img_tui::{NativeImageConfig, RenderMode, TerminalCapability, capability, native_image};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::{
-  app::{App, EditorRequest},
+  app::App,
+  background::InputGate,
+  config::{RenderConfig, Settings},
   event::AsyncEvent,
+  event_loop::Session,
+  overlay::OverlayStore,
   pdf::{PageStore, PdfDocument},
   render::RenderStore,
   terminal::Tui,
+  ui::ImagePipeline,
 };
 
 #[derive(Debug, Parser)]
@@ -55,17 +54,6 @@ struct Cli {
   /// Optional layout override: scroll <columns> <scroll_divisor> or grid <rows> <columns>.
   #[arg(trailing_var_arg = true)]
   layout: Vec<String>,
-}
-
-/// Identity of the opened file for progress storage: a changed size or
-/// mtime invalidates the remembered position instead of restoring a
-/// stale one after the PDF is edited.
-mod document {
-  #[derive(Debug, Clone, Copy)]
-  pub struct Identity {
-    pub size_bytes: u64,
-    pub modified_nanos: u128,
-  }
 }
 
 #[tokio::main]
@@ -87,37 +75,14 @@ async fn main() -> Result<()> {
     log_path = %log_path.display(),
     "pdf-tui starting"
   );
-  if let Err(error) = cache::remove_legacy_crop_cache(&settings.cache_dir).await {
-    warn!(%error, "failed to remove legacy crop cache");
-    eprintln!("failed to remove legacy crop cache: {error}");
-  }
-  if let Err(error) =
-    cache::enforce_render_cache_limit(&settings.cache_dir, settings.config.render.cache_max_bytes)
-      .await
-  {
-    warn!(%error, "failed to clean pdf-tui cache");
-    eprintln!("failed to clean pdf-tui cache: {error}");
-  }
+  tidy_cache(&settings).await;
   apply_cli_layout(&mut settings, &cli.layout)?;
 
   let terminal_capability = capability::detect();
   info!(?terminal_capability, "detected terminal capability");
-  let mut effective_render = settings.config.render.clone();
-  if effective_render.auto_detect {
-    effective_render.apply_terminal_capability(&terminal_capability);
-  }
-  let render_modes = if let Some(modes) = capability::render_modes_override_from_env() {
-    modes
-  } else if effective_render.auto_detect {
-    terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
-  } else {
-    vec![RenderMode::Symbols, RenderMode::Ascii]
-  };
-  info!(
-    modes = ?render_modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
-    effective_render = ?effective_render,
-    "render mode order"
-  );
+  let (effective_render, render_modes) =
+    render_setup(&settings.config.render, &terminal_capability);
+
   let document = PdfDocument::open(
     input,
     settings.cache_dir.join("pages"),
@@ -130,49 +95,27 @@ async fn main() -> Result<()> {
     dpi = document.dpi,
     "opened pdf document"
   );
-  let document_identity = {
-    let metadata = std::fs::metadata(&document.path)
-      .with_context(|| format!("failed to stat {}", document.path.display()))?;
-    document::Identity {
-      size_bytes: metadata.len(),
-      modified_nanos: metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default(),
-    }
-  };
-  let remember_position =
-    settings.config.behavior.remember_reading_position && document_identity.modified_nanos > 0;
-  let document_progress_target = if remember_position {
+  let remember_position = settings.config.behavior.remember_reading_position;
+  let saved_progress = if remember_position && document.modified_nanos > 0 {
     progress_store::load_matching(
       &settings.cache_dir,
       &document.path,
-      document_identity.size_bytes,
-      document_identity.modified_nanos,
+      document.size_bytes,
+      document.modified_nanos,
     )
   } else {
     None
   };
-  let mut page_store = PageStore::new(document.clone(), settings.config.render.max_concurrent);
+  let page_store = PageStore::new(document.clone(), settings.config.render.max_concurrent);
 
-  let (tx, mut rx) = mpsc::unbounded_channel::<AsyncEvent>();
-  let input_enabled = Arc::new(AtomicBool::new(true));
-  let input_generation = Arc::new(AtomicU64::new(0));
-  spawn_input_thread(tx.clone(), input_enabled.clone(), input_generation.clone());
-  spawn_auto_refresh_thread(
-    tx.clone(),
-    document.path.clone(),
-    settings.config.behavior.clone(),
-  );
+  let (tx, rx) = mpsc::unbounded_channel::<AsyncEvent>();
+  let input_gate = InputGate::spawn(tx.clone());
+  background::spawn_file_watcher(tx.clone(), document.path.clone(), &settings.config.behavior);
 
   let mut app = App::new(document, settings);
   app.terminal_cell_pixels = terminal_capability.cell_pixels;
-  if let Some(progress) = cli.progress {
-    app.set_user_progress_target(progress);
-  } else if let Some(document_progress) = document_progress_target {
-    app.set_document_progress_target(document_progress);
+  if let Some(progress) = cli.progress.or(saved_progress) {
+    app.set_progress_target(progress);
   }
 
   let native_config = NativeImageConfig {
@@ -190,386 +133,93 @@ async fn main() -> Result<()> {
       )
     })
     .flatten();
-  let mut renderer = RenderStore::new(
-    app.settings.cache_dir.join("render"),
-    effective_render,
-    native_config,
-    render_modes,
-  );
+  let pipeline = ImagePipeline {
+    pages: page_store,
+    overlays: OverlayStore::new(app.settings.cache_dir.clone(), &app.settings.config.render),
+    renderer: RenderStore::new(
+      app.settings.cache_dir.join("render"),
+      effective_render,
+      native_config,
+      render_modes,
+    ),
+  };
 
+  terminal::install_panic_hook();
   let mut tui = Tui::new(protocol_reset)?;
-  let mut needs_draw = true;
-  loop {
-    if needs_draw {
-      debug!(scroll = app.scroll, focused_page = app.focused_page, layout = %app.layout.label(), "drawing frame");
-      tui.draw(|frame| ui::draw(frame, &mut app, &mut page_store, &mut renderer, &tx))?;
-      needs_draw = false;
-      if app.should_quit() {
-        break;
-      }
-    }
-
-    if let Some(request) = app.take_editor_request() {
-      input_enabled.store(false, Ordering::SeqCst);
-      input_generation.fetch_add(1, Ordering::SeqCst);
-      tui.suspend()?;
-      let result = edit_text_in_editor(request.initial_text(), &app.settings.cache_dir);
-      let resume_result = tui.resume();
-      if resume_result.is_ok() {
-        discard_pending_terminal_events();
-      }
-      input_generation.fetch_add(1, Ordering::SeqCst);
-      input_enabled.store(true, Ordering::SeqCst);
-      match request {
-        EditorRequest::Metadata { original, .. } => {
-          app.finish_metadata_editor_input(original, result)
-        }
-        EditorRequest::Bookmarks { original, .. } => {
-          app.finish_bookmarks_editor_input(original, result)
-        }
-      }
-      resume_result?;
-      needs_draw = true;
-      continue;
-    }
-
-    let Some(message) = rx.recv().await else {
-      break;
-    };
-    needs_draw |= handle_async_event(
-      message,
-      &input_generation,
-      &mut app,
-      &mut page_store,
-      &mut renderer,
-      &tx,
-    );
-    while let Ok(message) = rx.try_recv() {
-      needs_draw |= handle_async_event(
-        message,
-        &input_generation,
-        &mut app,
-        &mut page_store,
-        &mut renderer,
-        &tx,
-      );
-    }
-  }
+  let mut session = Session::new(app, pipeline, tx, rx, input_gate);
+  let result = session.run(&mut tui).await;
   tui.restore()?;
-  if remember_position
-    && let Some(progress) = app.save_progress_on_exit()
-    && let Err(error) = progress_store::upsert(
-      &app.settings.cache_dir,
-      progress_store::ProgressEntry::new(
-        &app.document.path,
-        progress,
-        document_identity.size_bytes,
-        document_identity.modified_nanos,
-        app.document.page_count,
-      ),
-    )
-    .context("failed to save reading progress")
-  {
-    warn!(%error, "could not persist reading progress");
+  result?;
+  if remember_position {
+    save_reading_position(&session.app);
   }
   Ok(())
 }
 
-fn handle_async_event(
-  message: AsyncEvent,
-  input_generation: &AtomicU64,
-  app: &mut App,
-  page_store: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-) -> bool {
-  match message {
-    AsyncEvent::Input { event, generation } => {
-      let current_generation = input_generation.load(Ordering::SeqCst);
-      if generation == current_generation {
-        debug!(?event, generation, "input event accepted");
-        let redraw = app.handle_input(event, tx);
-        if app.take_search_preload_reset() {
-          page_store.cancel_preloads();
-          renderer.cancel_preloads();
-        }
-        debug!(
-          redraw,
-          scroll = app.scroll,
-          focused_page = app.focused_page,
-          message = %app.message,
-          "input event handled"
-        );
-        redraw
-      } else {
-        debug!(
-          ?event,
-          generation, current_generation, "input event ignored because generation is stale"
-        );
-        false
-      }
-    }
-    AsyncEvent::Page(outcome) => {
-      if outcome.source_size_bytes != app.document.size_bytes
-        || outcome.source_modified_nanos != app.document.modified_nanos
-      {
-        debug!(
-          page = outcome.page_index + 1,
-          source_size_bytes = outcome.source_size_bytes,
-          current_size_bytes = app.document.size_bytes,
-          source_modified_nanos = outcome.source_modified_nanos,
-          current_modified_nanos = app.document.modified_nanos,
-          "ignored stale page outcome"
-        );
-        return false;
-      }
-      let page_index = outcome.page_index;
-      let preload = outcome.preload;
-      let success = outcome.result.is_ok();
-      let slice = outcome.slice;
-      match &outcome.result {
-        Ok(page) => {
-          if let Some(slice) = slice {
-            debug!(
-              page = page_index + 1,
-              slice = slice.slice_index + 1,
-              slice_count = slice.slice_count,
-              preload,
-              width = page.width,
-              height = page.height,
-              path = %page.path.display(),
-              metadata = ?page.slice,
-              "page slice render completed"
-            );
-          } else {
-            debug!(
-              page = page_index + 1,
-              preload,
-              width = page.width,
-              height = page.height,
-              path = %page.path.display(),
-              "page render completed"
-            );
-          }
-        }
-        Err(error) => {
-          if let Some(slice) = slice {
-            warn!(
-              page = page_index + 1,
-              slice = slice.slice_index + 1,
-              slice_count = slice.slice_count,
-              preload,
-              %error,
-              "page slice render failed"
-            );
-          } else {
-            warn!(page = page_index + 1, preload, %error, "page render failed");
-          }
-        }
-      }
-      let visible_wait = page_store.finish(&outcome, success || !preload, tx);
-      if success || !preload {
-        if let Some(slice) = slice {
-          app.finish_slice(slice, outcome.result);
-        } else {
-          app.finish_page(page_index, outcome.result);
-        }
-        ui::pump_preload(app, page_store, renderer, tx);
-        let redraw = !preload || visible_wait;
-        debug!(
-          page = page_index + 1,
-          preload, visible_wait, redraw, "page event handled"
-        );
-        redraw
-      } else {
-        debug!(
-          page = page_index + 1,
-          preload, visible_wait, "page preload event handled"
-        );
-        visible_wait
-      }
-    }
-    AsyncEvent::Render(outcome) => {
-      match &outcome.result {
-        Ok(rendered) => debug!(
-          cache_key = %outcome.cache_key,
-          slot_key = %outcome.slot_key,
-          preload = outcome.preload,
-          kind = rendered_kind(rendered),
-          "image render completed"
-        ),
-        Err(error) => warn!(
-          cache_key = %outcome.cache_key,
-          slot_key = %outcome.slot_key,
-          preload = outcome.preload,
-          %error,
-          "image render failed"
-        ),
-      }
-      let result = renderer.finish(outcome, tx);
-      if let Some(error) = result.message {
-        app.set_message(error);
-      }
-      debug!(needs_draw = result.needs_draw, "image render event handled");
-      result.needs_draw
-    }
-    AsyncEvent::AutoRefreshRequested => {
-      app.request_refresh(tx);
-      true
-    }
-    AsyncEvent::Refresh(outcome) => {
-      let queued = app.finish_refresh_request();
-      match outcome.result {
-        Ok(reload) => {
-          apply_document_reload(reload, app, page_store, renderer);
-          app.set_message("refreshed current document");
-          info!(path = %app.document.path.display(), "document refreshed");
-        }
-        Err(error) => {
-          app.set_message(format!("refresh failed: {error}"));
-          warn!(%error, "document refresh failed");
-        }
-      }
-      if queued {
-        app.request_refresh(tx);
-      }
-      true
-    }
-    AsyncEvent::MetadataWrite(outcome) => match outcome.result {
-      Ok(reload) => {
-        apply_document_reload(reload, app, page_store, renderer);
-        app.set_message(format!("metadata updated: {} tag(s)", outcome.changed_tags));
-        info!(
-          changed_tags = outcome.changed_tags,
-          "metadata write finished"
-        );
-        true
-      }
-      Err(error) => {
-        app.set_message(format!("metadata write failed: {error}"));
-        warn!(%error, "metadata write failed");
-        true
-      }
-    },
-    AsyncEvent::BookmarksWrite(outcome) => match outcome.result {
-      Ok(reload) => {
-        apply_document_reload(reload, app, page_store, renderer);
-        app.set_message(format!(
-          "bookmarks updated: {} entries",
-          outcome.changed_bookmarks
-        ));
-        info!(
-          changed_bookmarks = outcome.changed_bookmarks,
-          "bookmarks write finished"
-        );
-        true
-      }
-      Err(error) => {
-        app.set_message(format!("bookmarks write failed: {error}"));
-        warn!(%error, "bookmarks write failed");
-        true
-      }
-    },
-    AsyncEvent::SearchIndex(outcome) => {
-      if outcome.source_size_bytes != app.document.size_bytes
-        || outcome.source_modified_nanos != app.document.modified_nanos
-      {
-        debug!(
-          source_size_bytes = outcome.source_size_bytes,
-          current_size_bytes = app.document.size_bytes,
-          source_modified_nanos = outcome.source_modified_nanos,
-          current_modified_nanos = app.document.modified_nanos,
-          "ignored stale search index"
-        );
-        return false;
-      }
-      app.finish_search_index(outcome.result);
-      app.finish_pending_selection_text_copy(tx);
-      if app.take_search_preload_reset() {
-        page_store.cancel_preloads();
-        renderer.cancel_preloads();
-      }
-      ui::pump_preload(app, page_store, renderer, tx);
-      true
-    }
-    AsyncEvent::SearchPreloadReady { generation } => {
-      if app.finish_search_preload_delay(generation) {
-        ui::pump_preload(app, page_store, renderer, tx);
-      }
-      false
-    }
-    AsyncEvent::SelectionImage(outcome) => {
-      if outcome.source_size_bytes != app.document.size_bytes
-        || outcome.source_modified_nanos != app.document.modified_nanos
-      {
-        debug!(
-          source_size_bytes = outcome.source_size_bytes,
-          current_size_bytes = app.document.size_bytes,
-          source_modified_nanos = outcome.source_modified_nanos,
-          current_modified_nanos = app.document.modified_nanos,
-          "ignored stale selection image"
-        );
-        return false;
-      }
-      let redraw = !outcome.preload || app.view == app::ViewMode::Selection;
-      app.finish_selection_image(outcome);
-      ui::pump_preload(app, page_store, renderer, tx);
-      redraw
-    }
-    AsyncEvent::Clipboard(outcome) => {
-      app.finish_clipboard(outcome);
-      true
-    }
-    AsyncEvent::CacheClear(outcome) => match outcome.result {
-      Ok(report) => {
-        app.clear_cached_images();
-        page_store.clear_state();
-        renderer.clear_state();
-        app.set_message(format!(
-          "cache cleared: {} files, {} bytes",
-          report.removed_files, report.removed_bytes
-        ));
-        info!(
-          before_bytes = report.before_bytes,
-          after_bytes = report.after_bytes,
-          removed_files = report.removed_files,
-          removed_bytes = report.removed_bytes,
-          "cache cleared"
-        );
-        true
-      }
-      Err(error) => {
-        app.set_message(format!("clear-cache failed: {error}"));
-        warn!(%error, "cache clear failed");
-        true
-      }
-    },
+/// Removes the obsolete crop cache and trims the disk cache to its limit.
+/// Failures are reported but never block startup.
+async fn tidy_cache(settings: &Settings) {
+  if let Err(error) = cache::remove_legacy_crop_cache(&settings.cache_dir).await {
+    warn!(%error, "failed to remove legacy crop cache");
+    eprintln!("failed to remove legacy crop cache: {error}");
+  }
+  if let Err(error) =
+    cache::enforce_render_cache_limit(&settings.cache_dir, settings.config.render.cache_max_bytes)
+      .await
+  {
+    warn!(%error, "failed to clean pdf-tui cache");
+    eprintln!("failed to clean pdf-tui cache: {error}");
   }
 }
 
-fn rendered_kind(rendered: &event::RenderedImage) -> &'static str {
-  match rendered {
-    event::RenderedImage::Symbols { .. } => "symbols",
-    event::RenderedImage::Protocol { .. } => "protocol",
+/// Chafa arguments adjusted to the detected terminal, and the order in
+/// which render modes are tried.
+fn render_setup(
+  configured: &RenderConfig,
+  terminal_capability: &TerminalCapability,
+) -> (RenderConfig, Vec<RenderMode>) {
+  let mut effective_render = configured.clone();
+  if effective_render.auto_detect {
+    effective_render.apply_terminal_capability(terminal_capability);
+  }
+  let render_modes = if let Some(modes) = capability::render_modes_override_from_env() {
+    modes
+  } else if effective_render.auto_detect {
+    terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
+  } else {
+    vec![RenderMode::Symbols, RenderMode::Ascii]
+  };
+  info!(
+    modes = ?render_modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
+    effective_render = ?effective_render,
+    "render mode order"
+  );
+  (effective_render, render_modes)
+}
+
+/// Saves the reading position keyed by the document as it is now: after a
+/// refresh or an in-app edit, the file on disk is the reloaded version.
+fn save_reading_position(app: &App) {
+  let document = &app.document;
+  if document.modified_nanos == 0 {
+    return;
+  }
+  let Some(progress) = app.save_progress_on_exit() else {
+    return;
+  };
+  let entry = progress_store::ProgressEntry::new(
+    &document.path,
+    progress,
+    document.size_bytes,
+    document.modified_nanos,
+    document.page_count,
+  );
+  if let Err(error) = progress_store::upsert(&app.settings.cache_dir, entry) {
+    warn!(%error, "could not persist reading progress");
   }
 }
 
-fn apply_document_reload(
-  reload: event::DocumentReload,
-  app: &mut App,
-  page_store: &mut PageStore,
-  renderer: &mut RenderStore,
-) {
-  let document = reload.document.clone();
-  app.apply_document_reload(reload.document, reload.metadata, reload.bookmarks);
-  page_store.replace_document(document);
-  renderer.clear_state();
-}
-
-fn apply_cli_layout(settings: &mut config::Settings, args: &[String]) -> Result<()> {
-  if args.is_empty() {
-    return Ok(());
-  }
+fn apply_cli_layout(settings: &mut Settings, args: &[String]) -> Result<()> {
   let Some((name, raw_args)) = args.split_first() else {
     return Ok(());
   };
@@ -580,84 +230,4 @@ fn apply_cli_layout(settings: &mut config::Settings, args: &[String]) -> Result<
     .set_active_from_args(name, &raw_args)
     .map_err(anyhow::Error::msg)?;
   Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileSignature {
-  len: u64,
-  modified: Option<SystemTime>,
-}
-
-fn file_signature(path: &PathBuf) -> Option<FileSignature> {
-  let metadata = fs::metadata(path).ok()?;
-  Some(FileSignature {
-    len: metadata.len(),
-    modified: metadata.modified().ok(),
-  })
-}
-
-fn spawn_input_thread(
-  tx: mpsc::UnboundedSender<AsyncEvent>,
-  enabled: Arc<AtomicBool>,
-  generation: Arc<AtomicU64>,
-) {
-  thread::spawn(move || {
-    loop {
-      if !enabled.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(10));
-        continue;
-      }
-      match crossterm_event::read() {
-        Ok(event) => {
-          let generation = generation.load(Ordering::SeqCst);
-          if tx.send(AsyncEvent::Input { event, generation }).is_err() {
-            break;
-          }
-        }
-        Err(_) => thread::sleep(Duration::from_millis(10)),
-      }
-    }
-  });
-}
-
-fn spawn_auto_refresh_thread(
-  tx: mpsc::UnboundedSender<AsyncEvent>,
-  path: PathBuf,
-  behavior: config::BehaviorConfig,
-) {
-  if !behavior.auto_refresh {
-    return;
-  }
-  thread::spawn(move || {
-    let poll = Duration::from_millis(behavior.auto_refresh_poll_ms.max(200));
-    let min_interval = Duration::from_millis(behavior.auto_refresh_min_interval_ms.max(500));
-    let mut last_signature = file_signature(&path);
-    let mut last_sent = Instant::now()
-      .checked_sub(min_interval)
-      .unwrap_or_else(Instant::now);
-    let mut pending = false;
-    loop {
-      thread::sleep(poll);
-      let signature = file_signature(&path);
-      if signature != last_signature {
-        last_signature = signature;
-        pending = true;
-      }
-      if pending && last_sent.elapsed() >= min_interval {
-        if tx.send(AsyncEvent::AutoRefreshRequested).is_err() {
-          break;
-        }
-        last_sent = Instant::now();
-        pending = false;
-      }
-    }
-  });
-}
-
-fn discard_pending_terminal_events() {
-  while crossterm_event::poll(Duration::from_millis(0)).unwrap_or(false) {
-    if crossterm_event::read().is_err() {
-      break;
-    }
-  }
 }

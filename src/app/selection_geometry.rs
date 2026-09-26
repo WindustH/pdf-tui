@@ -1,8 +1,8 @@
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 
 use crate::selection::{PdfPoint, PdfRect, PdfSelection, SelectionAnchor};
 
-use super::{App, SelectionDisplay};
+use super::{App, selection_state::SelectionDisplay};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SelectionHit {
@@ -297,90 +297,26 @@ pub(super) fn normalized_distance(
   dx * dx + dy * dy
 }
 
-pub(super) fn contains(area: Rect, column: u16, row: u16) -> bool {
-  column >= area.x
-    && column < area.x.saturating_add(area.width)
-    && row >= area.y
-    && row < area.y.saturating_add(area.height)
-}
-
+/// Squared cell distance from (`column`, `row`) to the nearest cell of `area`.
 pub(super) fn distance_to_rect(area: Rect, column: u16, row: u16) -> u32 {
-  let x0 = i32::from(area.x);
-  let y0 = i32::from(area.y);
-  let x1 = i32::from(area.x.saturating_add(area.width.saturating_sub(1)));
-  let y1 = i32::from(area.y.saturating_add(area.height.saturating_sub(1)));
-  let x = i32::from(column).clamp(x0, x1);
-  let y = i32::from(row).clamp(y0, y1);
-  column
-    .abs_diff(u16::try_from(x).unwrap_or_default())
-    .pow(2)
-    .saturating_add(row.abs_diff(u16::try_from(y).unwrap_or_default()).pow(2))
-    .into()
+  let nearest_x = column.clamp(area.x, area.x.saturating_add(area.width.saturating_sub(1)));
+  let nearest_y = row.clamp(area.y, area.y.saturating_add(area.height.saturating_sub(1)));
+  let dx = u32::from(column.abs_diff(nearest_x));
+  let dy = u32::from(row.abs_diff(nearest_y));
+  dx * dx + dy * dy
 }
 
-pub(super) fn fitted_page_area(
-  area: Rect,
-  cell_pixels: Option<(u16, u16)>,
-  page_dimensions: Option<(u32, u32)>,
-) -> Rect {
-  if area.width == 0 || area.height == 0 {
-    return area;
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn distance_to_rect_does_not_wrap_on_wide_terminals() {
+    let area = Rect::new(0, 0, 10, 10);
+    assert_eq!(distance_to_rect(area, 5, 5), 0);
+    // 300 columns away: 291^2 must not wrap around u16.
+    assert_eq!(distance_to_rect(area, 300, 5), 291 * 291);
+    let near = Rect::new(250, 0, 10, 10);
+    assert!(distance_to_rect(near, 300, 5) < distance_to_rect(area, 300, 5));
   }
-  let (target_width, target_height) =
-    page_target_pixels(area.width, area.height, cell_pixels, page_dimensions);
-  let (cell_width, cell_height) = cell_pixels.unwrap_or((8, 16));
-  let width = ceil_div_u32(target_width.max(1), u32::from(cell_width.max(1)))
-    .min(u32::from(area.width))
-    .max(1) as u16;
-  let height = ceil_div_u32(target_height.max(1), u32::from(cell_height.max(1)))
-    .min(u32::from(area.height))
-    .max(1) as u16;
-  Rect::new(
-    area.x.saturating_add(area.width.saturating_sub(width) / 2),
-    area
-      .y
-      .saturating_add(area.height.saturating_sub(height) / 2),
-    width,
-    height,
-  )
-}
-
-fn page_target_pixels(
-  width: u16,
-  height: u16,
-  cell_pixels: Option<(u16, u16)>,
-  page_dimensions: Option<(u32, u32)>,
-) -> (u32, u32) {
-  let (cell_width, cell_height) = cell_pixels.unwrap_or((8, 16));
-  let max_width = u32::from(width.max(1)).saturating_mul(u32::from(cell_width.max(1)));
-  let max_height = u32::from(height.max(1)).saturating_mul(u32::from(cell_height.max(1)));
-  let Some((page_width, page_height)) = page_dimensions else {
-    return (max_width.max(1), max_height.max(1));
-  };
-  let scale = (f64::from(max_width.max(1)) / f64::from(page_width.max(1)))
-    .min(f64::from(max_height.max(1)) / f64::from(page_height.max(1)));
-  (
-    (f64::from(page_width.max(1)) * scale)
-      .round()
-      .clamp(1.0, f64::from(u32::MAX)) as u32,
-    (f64::from(page_height.max(1)) * scale)
-      .round()
-      .clamp(1.0, f64::from(u32::MAX)) as u32,
-  )
-}
-
-fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
-  value
-    .saturating_add(divisor.saturating_sub(1))
-    .saturating_div(divisor.max(1))
-}
-
-pub(super) fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {
-  if area.width <= horizontal.saturating_mul(2) || area.height <= vertical.saturating_mul(2) {
-    return Rect::new(area.x, area.y, 0, 0);
-  }
-  area.inner(Margin {
-    horizontal,
-    vertical,
-  })
 }

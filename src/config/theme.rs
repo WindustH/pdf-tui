@@ -131,15 +131,32 @@ fn parse_color(value: &str) -> Color {
           .map(Color::Indexed)
           .unwrap_or(Color::Reset);
       }
-      if lower.len() == 7 && lower.starts_with('#') {
-        let r = u8::from_str_radix(&lower[1..3], 16);
-        let g = u8::from_str_radix(&lower[3..5], 16);
-        let b = u8::from_str_radix(&lower[5..7], 16);
-        if let (Ok(r), Ok(g), Ok(b)) = (r, g, b) {
-          return Color::Rgb(r, g, b);
-        }
-      }
-      Color::Reset
+      parse_hex_color(&lower).unwrap_or(Color::Reset)
     }
+  }
+}
+
+/// `#rrggbb`; anything else (including non-ASCII input) is rejected.
+fn parse_hex_color(value: &str) -> Option<Color> {
+  let hex = value.strip_prefix('#')?;
+  if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    return None;
+  }
+  let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
+  Some(Color::Rgb(channel(0..2)?, channel(2..4)?, channel(4..6)?))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_hex_and_rejects_malformed_colors() {
+    assert_eq!(parse_color("#FF8000"), Color::Rgb(255, 128, 0));
+    assert_eq!(parse_color("ansi:42"), Color::Indexed(42));
+    // Seven bytes but not seven characters: must not slice inside 'é'.
+    assert_eq!(parse_color("#a\u{e9}bcd"), Color::Reset);
+    assert_eq!(parse_color("#12345"), Color::Reset);
+    assert_eq!(parse_color("#12345g"), Color::Reset);
   }
 }

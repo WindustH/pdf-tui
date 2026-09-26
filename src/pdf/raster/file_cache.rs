@@ -3,12 +3,12 @@ use std::{
   fs as std_fs,
   io::ErrorKind,
   path::{Path, PathBuf},
-  time::{Duration, SystemTime, UNIX_EPOCH},
+  time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use image::ImageFormat;
-use tokio::{fs, io::AsyncWriteExt, time::sleep};
+use tokio::fs;
 use tracing::warn;
 
 use crate::cache;
@@ -51,66 +51,11 @@ pub(super) async fn read_cached_page_image(
   }))
 }
 
-pub(super) struct PageImageLock {
-  path: PathBuf,
-}
-
-impl Drop for PageImageLock {
-  fn drop(&mut self) {
-    let _ = std_fs::remove_file(&self.path);
-  }
-}
-
-pub(super) async fn acquire_page_image_lock(output_path: &Path) -> Result<PageImageLock> {
-  let lock_path = lock_path_for(output_path);
-  loop {
-    match fs::OpenOptions::new()
-      .write(true)
-      .create_new(true)
-      .open(&lock_path)
-      .await
-    {
-      Ok(mut file) => {
-        let _ = file
-          .write_all(format!("pid={}\n", std::process::id()).as_bytes())
-          .await;
-        return Ok(PageImageLock { path: lock_path });
-      }
-      Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-        if lock_is_stale(&lock_path).await {
-          warn!(
-            lock = %lock_path.display(),
-            "removing stale pdf page image cache lock"
-          );
-          let _ = fs::remove_file(&lock_path).await;
-          continue;
-        }
-        sleep(Duration::from_millis(40)).await;
-      }
-      Err(error) => {
-        return Err(error)
-          .with_context(|| format!("failed to create cache lock {}", lock_path.display()));
-      }
-    }
-  }
-}
-
-fn lock_path_for(path: &Path) -> PathBuf {
-  let mut name = path
-    .file_name()
-    .map(|name| name.to_os_string())
-    .unwrap_or_else(|| "page".into());
-  name.push(".lock");
-  path.with_file_name(name)
-}
-
-async fn lock_is_stale(path: &Path) -> bool {
-  fs::metadata(path)
-    .await
-    .ok()
-    .and_then(|metadata| metadata.modified().ok())
-    .and_then(|modified| modified.elapsed().ok())
-    .is_some_and(|age| age > Duration::from_secs(600))
+/// Serializes rendering of one cache entry group across tasks and
+/// processes. Uses the OS-locked cache locks, so a lock left behind by a
+/// killed process is reclaimed instead of blocking until it ages out.
+pub(super) async fn acquire_page_image_lock(output_path: &Path) -> Result<cache::CacheFileLock> {
+  cache::acquire_cache_file_lock(output_path).await
 }
 
 pub(super) fn page_output_path(
@@ -193,26 +138,22 @@ pub(super) async fn create_temp_work_dir(base: &Path, label: &str) -> Result<Tem
   Ok(TempWorkDir { path: dir })
 }
 
+/// Moves a finished temporary file into the cache. Work directories live
+/// under the system temp dir, often another filesystem (tmpfs) where
+/// `rename` fails; the fallback copies next to the destination first so
+/// readers never observe a partially written cache entry.
 pub(super) async fn persist_temp_file(temp_path: &Path, output_path: &Path) -> Result<()> {
   if let Some(parent) = output_path.parent() {
     fs::create_dir_all(parent)
       .await
       .with_context(|| format!("failed to create {}", parent.display()))?;
   }
-  match fs::rename(temp_path, output_path).await {
-    Ok(()) => Ok(()),
-    Err(error) => {
-      fs::copy(temp_path, output_path).await.with_context(|| {
-        format!(
-          "failed to copy {} to {} after rename failed ({error})",
-          temp_path.display(),
-          output_path.display()
-        )
-      })?;
-      let _ = fs::remove_file(temp_path).await;
-      Ok(())
-    }
+  if fs::rename(temp_path, output_path).await.is_ok() {
+    return Ok(());
   }
+  let copied = cache::copy_file_atomic(temp_path, output_path).await;
+  let _ = fs::remove_file(temp_path).await;
+  copied
 }
 
 pub(super) async fn collect_numbered_png_outputs(
@@ -303,37 +244,23 @@ fn now_nanos() -> u128 {
     .as_nanos()
 }
 
+/// Encodes `image` as a PNG straight into the cache via a temporary
+/// sibling, so readers never see a partial file.
 pub(super) async fn write_png_atomic(
   image: image::DynamicImage,
-  temp_path: PathBuf,
   output_path: PathBuf,
 ) -> Result<()> {
-  if let Some(parent) = temp_path.parent() {
+  if let Some(parent) = output_path.parent() {
     fs::create_dir_all(parent)
       .await
       .with_context(|| format!("failed to create {}", parent.display()))?;
   }
-  let _ = fs::remove_file(&temp_path).await;
-  let write_path = temp_path.clone();
   tokio::task::spawn_blocking(move || {
-    image
-      .save_with_format(&write_path, ImageFormat::Png)
-      .with_context(|| format!("failed to write {}", write_path.display()))
+    cache::write_file_atomic_sync(&output_path, |temp| {
+      image.save_with_format(temp, ImageFormat::Png)
+    })
+    .map_err(anyhow::Error::msg)
   })
   .await
-  .map_err(|error| anyhow::anyhow!("image writer failed: {error}"))??;
-  persist_temp_file(&temp_path, &output_path).await
-}
-
-pub(super) fn temp_output_path_for(temp_dir: &Path, output_path: &Path) -> PathBuf {
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_nanos();
-  let mut name = output_path
-    .file_name()
-    .map(|name| name.to_os_string())
-    .unwrap_or_else(|| "slice.png".into());
-  name.push(format!(".tmp-{}-{nanos}", std::process::id()));
-  temp_dir.join(name)
+  .map_err(|error| anyhow::anyhow!("image writer failed: {error}"))?
 }

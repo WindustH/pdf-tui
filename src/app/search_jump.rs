@@ -1,3 +1,5 @@
+use ratatui::layout::Rect;
+
 use crate::{
   layout::{self, ScrollItem, ScrollLayout},
   search::PdfSearchMatch,
@@ -24,35 +26,28 @@ impl App {
     if viewport.width == 0 || viewport.height == 0 {
       return false;
     }
-    let scroll_layout = layout::compute_scroll_layout(
-      self.document.page_count,
-      viewport.width,
-      viewport.height,
-      &self.layout,
-      |index| self.page_dimensions(index),
-      self.terminal_cell_pixels,
-    );
-    let Some(target) = search_target_scroll_item(&scroll_layout, result) else {
+    self.prepare_scroll_layout(viewport);
+    let Some(cached) = self.scroll_layout.as_ref() else {
       return false;
     };
-    let max_row = layout::max_scroll_row_for_viewport(
-      &scroll_layout,
-      viewport.height,
-      self.layout.scroll_divisor,
-    );
+    let scroll_layout = cached.layout();
+    let Some(target) = search_target_scroll_item(scroll_layout, result) else {
+      return false;
+    };
+    let screen = Rect::new(0, 0, viewport.width, viewport.height);
+    let divisor = cached.scroll_divisor();
+    let center = f64::from(viewport.height) / 2.0;
     let mut best_row = None;
     let mut best_distance = f64::INFINITY;
-    for start_row in 0..=max_row {
-      let Some(screen_y) = search_target_screen_y(
-        &scroll_layout,
-        start_row,
-        viewport.height,
-        self.layout.scroll_divisor,
-        target,
-      ) else {
+    for start_row in 0..=cached.max_scroll() {
+      let Some(placed) = scroll_layout
+        .placed_items(start_row, screen, divisor)
+        .into_iter()
+        .find(|placed| placed.item.row_index == target.row_index)
+      else {
         continue;
       };
-      let distance = (screen_y - f64::from(viewport.height) / 2.0).abs();
+      let distance = (f64::from(placed.area.y) + target.local_y - center).abs();
       if distance < best_distance {
         best_row = Some(start_row);
         best_distance = distance;
@@ -62,7 +57,6 @@ impl App {
       return false;
     };
     self.scroll = best_row as u32;
-    self.last_scroll_layout = Some(scroll_layout);
     self.pending_progress = None;
     self.update_focus_from_scroll();
     true
@@ -117,7 +111,6 @@ impl App {
     };
     self.grid_start_page = best_start;
     self.focused_page = result.page_index;
-    self.last_scroll_layout = None;
     self.pending_progress = None;
     true
   }
@@ -168,33 +161,6 @@ fn search_target_scroll_item(
     }
   }
   best
-}
-
-fn search_target_screen_y(
-  scroll_layout: &ScrollLayout,
-  start_row: usize,
-  viewport_height: u16,
-  scroll_divisor: u16,
-  target: SearchScrollTarget,
-) -> Option<f64> {
-  let visible_rows =
-    layout::visible_scroll_rows(scroll_layout, start_row, viewport_height, scroll_divisor);
-  if !visible_rows.contains(&target.row_index) {
-    return None;
-  }
-  let used_height = layout::visible_rows_height(scroll_layout, &visible_rows);
-  let mut row_y = f64::from(viewport_height.saturating_sub(used_height)) / 2.0;
-  for (position, row_index) in visible_rows.iter().copied().enumerate() {
-    let row = scroll_layout.rows.get(row_index)?;
-    if row_index == target.row_index {
-      return Some(row_y + target.local_y);
-    }
-    row_y += f64::from(row.height);
-    if position + 1 < visible_rows.len() {
-      row_y += f64::from(row.gap_after);
-    }
-  }
-  None
 }
 
 fn scroll_item_fraction_bounds(item: ScrollItem) -> (f64, f64) {

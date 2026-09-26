@@ -42,7 +42,7 @@ the features you need.
 | Symbol/ASCII graphics fallback | `chafa` | Required when no native terminal image protocol works |
 | Metadata view and editing | `exiftool` | Optional |
 | Bookmark view and editing | `pdftk` | Optional |
-| External metadata/bookmark editor | `sh` plus `$EDITOR` | Optional; see [Git, Shell, And Editor](#git-shell-and-editor) |
+| Metadata and bookmark editing | An editor named by `EDITOR` | Optional; see [Editor](#editor) |
 
 Pdfium is the default backend and was the fastest backend in the project's
 existing Linux benchmark. It is therefore the recommended performance path.
@@ -57,7 +57,7 @@ The suggested installation order is:
 2. Install Pdfium and confirm that `pdfium.dll` can be loaded.
 3. Install Chafa unless the chosen terminal's native image protocol is known to
    work.
-4. Add ExifTool, PDFtk, MuPDF, Git/sh, and an editor only for the corresponding
+4. Add ExifTool, PDFtk, MuPDF, and an editor only for the corresponding
    optional features.
 
 Choose the dependency set that matches the features you need:
@@ -65,7 +65,7 @@ Choose the dependency set that matches the features you need:
 - Recommended: Poppler, Pdfium, and Chafa.
 - Minimal diagnostic setup: Poppler and Chafa, using the Poppler backend.
 - Full setup: add MuPDF for backend comparison, ExifTool for metadata, PDFtk
-  for bookmarks, and Git/sh plus an editor for editing workflows.
+  for bookmarks, and an editor for editing workflows.
 
 ### Install Poppler
 
@@ -92,29 +92,23 @@ pdfinfo -v
 
 ## Configuration And Cache Paths
 
-The current Windows build reads `XDG_CONFIG_HOME` and `XDG_CACHE_HOME`. Set
-them to the standard Windows roaming and local application-data roots before
-the first run:
+Without further setup, `pdf-tui` uses:
+
+- `%APPDATA%\pdf-tui\` for `config.toml`, `keymap.toml`, and `theme.toml`
+- `%LOCALAPPDATA%\pdf-tui\` for page, render, search, selection, and log
+  files
+
+`XDG_CONFIG_HOME` and `XDG_CACHE_HOME` take precedence when set. When `HOME`
+is set, as in Git Bash or MSYS2 shells, `%HOME%\.config\pdf-tui` and
+`%HOME%\.cache\pdf-tui` are used instead of the application data folders. To
+keep one location regardless of the shell, set the XDG variables:
 
 ```powershell
-$env:XDG_CONFIG_HOME = $env:APPDATA
-$env:XDG_CACHE_HOME = $env:LOCALAPPDATA
-
 [Environment]::SetEnvironmentVariable("XDG_CONFIG_HOME", $env:APPDATA, "User")
 [Environment]::SetEnvironmentVariable("XDG_CACHE_HOME", $env:LOCALAPPDATA, "User")
 ```
 
-Restart the terminal after setting persistent environment variables. The
-resulting paths are:
-
-- `%APPDATA%\pdf-tui\config.toml`
-- `%APPDATA%\pdf-tui\keymap.toml`
-- `%APPDATA%\pdf-tui\theme.toml`
-- `%LOCALAPPDATA%\pdf-tui\` for page, render, search, selection, and log files
-
-Without `XDG_CONFIG_HOME` or `HOME`, the application falls back to a relative
-`.config\pdf-tui` directory. Explicitly setting the XDG variables avoids
-configuration and cache locations changing with the working directory.
+Restart the terminal after setting persistent environment variables.
 
 ## Recommended Pdfium Backend
 
@@ -172,7 +166,7 @@ The Poppler-only setup is easier to diagnose because it does not load a dynamic
 Pdfium library. Create a minimal configuration before the first run:
 
 ```powershell
-$configDir = Join-Path $env:XDG_CONFIG_HOME "pdf-tui"
+$configDir = Join-Path $env:APPDATA "pdf-tui"
 New-Item -ItemType Directory -Force $configDir | Out-Null
 
 @'
@@ -265,26 +259,21 @@ JAR requires Java and a `pdftk.cmd` wrapper because `pdf-tui` invokes a command
 named `pdftk` directly. Without PDFtk, the viewer still opens but reports that
 bookmarks are unavailable.
 
-### Git, Shell, And Editor
+### Editor
 
-The current external-editor integration launches `sh -c`. Native Windows
-editing therefore requires a POSIX-compatible `sh.exe`. Git for Windows is one
-way to provide it:
-
-```powershell
-winget install --id Git.Git -e
-Get-Command sh
-```
-
-If `sh` is not found, add the Git directory containing `sh.exe` to `PATH`. Set
-`EDITOR` to a command available from that shell, for example `nvim`:
+Metadata and bookmark editing start the program named by `EDITOR` (or
+`VISUAL`, falling back to `notepad`) with the draft file as its only argument.
+On Windows it is started directly, without a shell, so the variable must name an
+executable (`.exe`) found on `PATH` or by full path, without extra arguments:
 
 ```powershell
 $env:EDITOR = "nvim"
 [Environment]::SetEnvironmentVariable("EDITOR", "nvim", "User")
 ```
 
-Close the editor after saving so `pdf-tui` can resume the terminal interface.
+Editors that return immediately and keep editing in the background (such as
+VS Code launched through `code.cmd`) cannot be used this way. Close the editor
+after saving so `pdf-tui` can resume.
 
 Metadata and bookmark tools are optional. Their absence is reported inside the
 corresponding view and does not prevent page rendering.
@@ -296,8 +285,8 @@ corresponding view and does not prevent page rendering.
 - Selected text and PNG clipboard copy do not yet have a native Windows
   clipboard backend. The existing implementation supports macOS and Linux
   clipboard commands.
-- Metadata and bookmark editing depend on `sh`, which is not included with a
-  default Windows installation.
+- The editor for metadata and bookmarks must be a plain executable; editor
+  commands with arguments are not supported.
 - Native image protocol behavior depends on the terminal. Chafa symbol mode is
   the intended fallback.
 - The CI release archive contains `pdf-tui.exe` and documentation, but does not
@@ -305,8 +294,8 @@ corresponding view and does not prevent page rendering.
 
 ## Logs And Troubleshooting
 
-The startup message prints the active log path. With the paths recommended
-above, logs are under:
+The startup message prints the active log path. With the default paths, logs
+are under:
 
 ```text
 %LOCALAPPDATA%\pdf-tui\logs\

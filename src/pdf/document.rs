@@ -68,13 +68,6 @@ impl Drop for TempPageImage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PageSliceId {
-  pub page_index: usize,
-  pub slice_index: u16,
-  pub slice_count: u16,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PageSliceSpec {
   pub page_index: usize,
   pub slice_index: u16,
@@ -124,14 +117,6 @@ pub struct PageSliceMetadata {
 }
 
 impl PageSliceSpec {
-  pub fn id(self) -> PageSliceId {
-    PageSliceId {
-      page_index: self.page_index,
-      slice_index: self.slice_index,
-      slice_count: self.slice_count,
-    }
-  }
-
   pub(super) fn normalized(self) -> Self {
     let slice_count = self.slice_count.max(1);
     Self {

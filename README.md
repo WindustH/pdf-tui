@@ -1,19 +1,32 @@
 # pdf-tui
 
-`pdf-tui` is a terminal PDF reader built with rataui.
+`pdf-tui` is a PDF reader for the terminal, built with ratatui.
 
 https://github.com/user-attachments/assets/bad500d9-49e9-4634-b381-4949f8f0a255
 
-Runtime dependencies:
+- Sharp page images through the Kitty, Sixel, or iTerm2 graphics protocols,
+  with Chafa text rendering as a fallback in any terminal
+- Continuous scrolling in one or more columns, or a fixed page grid
+- Bookmark tree with page previews, embedded-text search with highlighted
+  matches, and mouse selection of page regions to copy as text or PNG
+- Edit PDF metadata and bookmarks in `$EDITOR`
+- Reload with `r`, or automatically whenever the PDF is rebuilt, and reopen
+  documents where you left off (both opt-in in `config.toml`)
+- Pages are rendered in the background, preloaded around the current
+  position, and cached on disk
 
-- `poppler` for `pdfinfo`, `pdftotext`, and the optional Poppler raster backend
+## Dependencies
+
+- `poppler` for `pdfinfo` (required), `pdftotext` (search and selection
+  text), and the optional Poppler raster backend
 - `pdfium` for the default PDF raster backend
 - `mupdf` for the optional `mutool` raster backend
-- `chafa` for terminal symbol rendering fallbacks
-- `exiftool` for editing PDF metadata
+- `chafa` for text rendering when no graphics protocol is available
+- `exiftool` for showing and editing PDF metadata
 - `pdftk` for reading and editing PDF bookmarks. Homebrew provides this
   command through the `pdftk-java` formula.
-- optional `wl-copy`, `xclip`, or `xsel` on Linux for copying selected text or PNGs
+- optional `wl-copy`, `xclip`, or `xsel` on Linux for copying selected text or
+  PNGs
 
 Manual dependency install examples:
 
@@ -69,28 +82,21 @@ brew install --HEAD WindustH/tap/pdf-tui
 
 ```sh
 pdf-tui /path/to/file.pdf
-pdf-tui --progress 0.0 /path/to/file.pdf
-pdf-tui /path/to/file.pdf scroll 1 3
-pdf-tui /path/to/file.pdf scroll 2 3
-pdf-tui /path/to/file.pdf grid 2 3
+pdf-tui --progress 12.5 /path/to/file.pdf # 0-based: the middle of page 13
+pdf-tui /path/to/file.pdf scroll 2 3      # two columns, three steps per screen
+pdf-tui /path/to/file.pdf grid 2 3        # two rows of three pages
 ```
 
-Runtime commands are available with `:`:
-
-```text
-layout scroll <columns> <scroll_divisor>
-layout grid <rows> <columns>
-refresh
-metadata
-bookmarks
-search
-selection
-help
-clear-cache
-quit
-```
+Scroll with `j`/`k` or the mouse wheel, move a screen at a time with `h`/`l`,
+and press `F1` for the key bindings of the current view. `b` opens bookmarks, `s`
+searches, `m` shows metadata, and `:` opens the command prompt, e.g.
+`:layout-use grid 2 2`. `q` quits.
 
 ## Documentation
 
 - [Documentation index](doc/index.md)
+- [Quick start](doc/quick-start.md)
+- [Controls](doc/controls.md) and [commands](doc/commands.md)
+- [Configuration](doc/configuration.md)
+- [Troubleshooting](doc/troubleshooting.md)
 - [Windows setup (experimental and untested)](doc/windows.md)

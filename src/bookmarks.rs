@@ -116,7 +116,19 @@ pub fn write_pdf_bookmarks_with_pdftk(
   }
   fs::metadata(&temp_pdf)
     .map_err(|err| format!("pdftk did not create {}: {err}", temp_pdf.display()))?;
+  // The edited copy replaces the original file, so it must keep the
+  // original's permissions instead of pdftk's defaults (umask).
+  if let Ok(original) = fs::metadata(path)
+    && let Err(error) = fs::set_permissions(&temp_pdf, original.permissions())
+  {
+    let _ = fs::remove_file(&temp_pdf);
+    return Err(format!(
+      "failed to copy permissions to {}: {error}",
+      temp_pdf.display()
+    ));
+  }
   fs::rename(&temp_pdf, path).map_err(|err| {
+    let _ = fs::remove_file(&temp_pdf);
     format!(
       "failed to replace {} with edited PDF: {err}",
       path.display()
@@ -261,7 +273,11 @@ fn replace_bookmarks_in_pdftk_data(data: &str, bookmarks: &[PdfBookmark]) -> Str
   rendered.extend(output[..insert_at].iter().cloned());
   for bookmark in bookmarks {
     rendered.push("BookmarkBegin".to_string());
-    rendered.push(format!("BookmarkTitle: {}", bookmark.title));
+    // The info file is line based: a line break would end the title.
+    rendered.push(format!(
+      "BookmarkTitle: {}",
+      bookmark.title.replace(['\r', '\n'], " ")
+    ));
     rendered.push(format!("BookmarkLevel: {}", bookmark.level.max(1)));
     rendered.push(format!("BookmarkPageNumber: {}", bookmark.page_index + 1));
   }

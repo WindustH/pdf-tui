@@ -12,7 +12,7 @@ use super::super::{
   store::PageRequestKey,
 };
 use super::{
-  file_cache::{acquire_page_image_lock, image_dimensions, temp_output_path_for, write_png_atomic},
+  file_cache::{acquire_page_image_lock, image_dimensions, write_png_atomic},
   render_page_image_with_batch_mode,
 };
 
@@ -109,7 +109,11 @@ async fn render_page_slice_image_with_batch_mode(
     );
   }
 
-  write_slice_metadata(&metadata_path, &metadata).await?;
+  // The metadata is derived from the cache key, so an existing file is
+  // already correct; rewriting it on every cache hit is wasted I/O.
+  if !metadata_path.exists() {
+    write_slice_metadata(&metadata_path, &metadata).await?;
+  }
   cache::touch_cache_entry(&output_path).await;
   cache::touch_cache_entry(&metadata_path).await;
 
@@ -191,8 +195,7 @@ async fn render_missing_page_slice_group(
       "writing pdf page slice image"
     );
     let slice = full_image.crop_imm(0, slice_y, full_width, slice_height);
-    let temp_path = temp_output_path_for(&document.page_temp_dir, &output_path);
-    write_png_atomic(slice, temp_path.clone(), output_path.clone()).await?;
+    write_png_atomic(slice, output_path.clone()).await?;
     let metadata = page_slice_metadata(
       document,
       sibling,

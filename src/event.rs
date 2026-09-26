@@ -6,6 +6,7 @@ use crate::{
   bookmarks::PdfBookmark,
   cache::CacheCleanupReport,
   metadata::PdfMetadataEntry,
+  overlay::OverlayKey,
   pdf::PdfDocument,
   pdf::{PageImage, PageSliceSpec},
   search::PdfSearchIndex,
@@ -24,6 +25,7 @@ pub enum AsyncEvent {
   SearchIndex(SearchIndexOutcome),
   SearchPreloadReady { generation: u64 },
   SelectionImage(SelectionImageOutcome),
+  Overlay(OverlayOutcome),
   Clipboard(ClipboardOutcome),
 }
 
@@ -85,6 +87,13 @@ pub struct SelectionImageOutcome {
 }
 
 #[derive(Debug)]
+pub struct OverlayOutcome {
+  pub key: OverlayKey,
+  pub preload: bool,
+  pub result: Result<PageImage, String>,
+}
+
+#[derive(Debug)]
 pub struct PageOutcome {
   pub source_size_bytes: u64,
   pub source_modified_nanos: u128,
@@ -99,7 +108,6 @@ pub struct PageOutcome {
 #[derive(Debug)]
 pub struct RenderOutcome {
   pub cache_key: String,
-  pub slot_key: String,
   pub preload: bool,
   pub result: Result<RenderedImage, String>,
 }
@@ -107,7 +115,6 @@ pub struct RenderOutcome {
 #[derive(Debug, Clone)]
 pub enum RenderedImage {
   Symbols {
-    mode: RenderMode,
     text: Text<'static>,
   },
   Protocol {

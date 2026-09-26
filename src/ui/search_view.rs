@@ -1,106 +1,52 @@
 use framework_tui::{PromptLineStyle, draw_prompt_line};
-use img_tui::ProtocolOverlay;
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Rect},
   style::{Modifier, Style},
   text::{Line, Span, Text},
-  widgets::{Block, Borders, Paragraph},
+  widgets::Paragraph,
 };
-use tokio::sync::mpsc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::{
-  app::App,
-  event::AsyncEvent,
-  pdf::PageStore,
-  render::{RenderKind, RenderStore},
-  search::{self, PdfSearchMatch},
+use crate::{app::App, geometry::split_panels, overlay::OverlayStep, search::PdfSearchMatch};
+
+use super::{
+  DrawCtx, base_style, draw_panel,
+  page::{draw_centered, draw_image, fitted_page_request, ready_page},
+  page_overlay::overlaid,
+  preload,
 };
 
-use super::preload;
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn draw_search(
-  frame: &mut Frame,
-  app: &mut App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
-  cursor_position: &mut Option<(u16, u16)>,
-) {
+pub(super) fn draw_search(frame: &mut Frame, app: &mut App, ctx: &mut DrawCtx<'_>, area: Rect) {
   app.update_viewport(area);
-  let left_ratio = u32::from(app.search_left_ratio.max(1));
-  let right_ratio = u32::from(app.search_right_ratio.max(1));
-  let chunks = ratatui::layout::Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([
-      Constraint::Ratio(left_ratio, left_ratio.saturating_add(right_ratio)),
-      Constraint::Ratio(right_ratio, left_ratio.saturating_add(right_ratio)),
-    ])
-    .split(area);
-  draw_search_panel(frame, app, chunks[0], cursor_position);
-  let preview_ready = draw_search_preview(
-    frame,
-    app,
-    pages,
-    renderer,
-    tx,
-    chunks[1],
-    obscured_areas,
-    overlays,
-    frame_message,
-    preserve_overlays,
-    preserve_areas,
-    drawn_render_keys,
-  );
+  let (panel, preview) = split_panels(area, app.search.left_ratio, app.search.right_ratio);
+  ctx.cursor_position = draw_search_panel(frame, app, panel);
+  let preview_ready = draw_search_preview(frame, app, ctx, preview);
   if app.search_preload_ready() {
-    preload::preload_search_previews(app, pages, renderer, tx, area);
+    preload::preload_search_previews(app, &mut ctx.preload(), area);
   }
   app.finish_frame_render_pass(preview_ready);
 }
 
-fn draw_search_panel(
-  frame: &mut Frame,
-  app: &mut App,
-  area: Rect,
-  cursor_position: &mut Option<(u16, u16)>,
-) {
-  let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.background));
-  let border = Style::default().fg(theme.color(&theme.border));
-  frame.render_widget(
-    Block::default()
-      .borders(Borders::ALL)
-      .title("search")
-      .border_style(border)
-      .style(base),
-    area,
-  );
-  let inner = super::page::safe_inner(area, 1, 1);
+fn draw_search_panel(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(u16, u16)> {
+  let inner = draw_panel(frame, app, area, "search");
   if inner.height == 0 {
-    return;
+    return None;
   }
   let chunks = ratatui::layout::Layout::default()
     .direction(Direction::Vertical)
     .constraints([Constraint::Length(1), Constraint::Min(0)])
     .split(inner);
+  let theme = &app.settings.theme;
+  let base = base_style(app);
   let prompt_style = PromptLineStyle {
     base,
     prefix: base.fg(theme.color(&theme.accent)),
     suggestion: base.fg(theme.color(&theme.muted)),
   };
-  *cursor_position = draw_prompt_line(frame, &app.search_prompt, None, chunks[0], &prompt_style);
+  let cursor = draw_prompt_line(frame, &app.search.prompt, None, chunks[0], &prompt_style);
   draw_search_results(frame, app, chunks[1]);
+  cursor
 }
 
 fn draw_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -108,37 +54,37 @@ fn draw_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
     return;
   }
   let visible_height = area.height.max(1);
-  app.clamp_search_scroll(visible_height);
+  app.search.clamp_scroll(visible_height);
   let theme = &app.settings.theme;
   let base = Style::default()
     .fg(theme.color(&theme.foreground))
     .bg(theme.color(&theme.background));
   let muted = base.fg(theme.color(&theme.muted));
   let mut lines = Vec::new();
-  let query = app.search_prompt.buffer().input.trim();
-  if app.search_index_loading {
+  let search = &app.search;
+  if search.index_loading {
     lines.push(Line::from(Span::styled("Building search index...", muted)));
-  } else if let Some(error) = &app.search_index_error {
+  } else if let Some(error) = &search.index_error {
     lines.push(Line::from(Span::styled(
       error.clone(),
       base.fg(theme.color(&theme.error)),
     )));
-  } else if query.is_empty() {
+  } else if search.query().is_empty() {
     lines.push(Line::from(Span::styled(
       "Type to search embedded PDF text",
       muted,
     )));
-  } else if app.search_results.is_empty() {
+  } else if search.results.is_empty() {
     lines.push(Line::from(Span::styled("No matches", muted)));
   } else {
     let width = area.width as usize;
-    for result in app
-      .search_results
+    for result in search
+      .results
       .iter()
-      .skip(app.search_scroll as usize)
+      .skip(usize::from(search.scroll))
       .take(visible_height as usize)
     {
-      let selected = app.search_selected == Some(result.id);
+      let selected = search.selected == Some(result.id);
       lines.push(search_result_line(app, result, selected, width));
     }
   }
@@ -199,8 +145,8 @@ fn highlighted_context_spans(
     return Vec::new();
   }
   let text = &result.display_text;
-  let start = result.display_match_start.min(text.len());
-  let end = result.display_match_end.min(text.len()).max(start);
+  let start = floor_char_boundary(text, result.display_match_start);
+  let end = floor_char_boundary(text, result.display_match_end).max(start);
   let window_start = context_window_start(text, start, width);
   let window_end = context_window_end(text, window_start, width);
   let prefix = text_slice(text, window_start, start.min(window_end));
@@ -225,133 +171,44 @@ fn highlighted_context_spans(
   spans
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_search_preview(
-  frame: &mut Frame,
-  app: &mut App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
-) -> bool {
-  let theme = &app.settings.theme;
-  let base = Style::default()
-    .fg(theme.color(&theme.foreground))
-    .bg(theme.color(&theme.background));
-  let border = Style::default().fg(theme.color(&theme.border));
-  frame.render_widget(
-    Block::default()
-      .borders(Borders::ALL)
-      .title("preview")
-      .border_style(border)
-      .style(base),
-    area,
-  );
-  let inner = super::page::safe_inner(area, 1, 1);
-  let Some(result) = app.selected_search_match().cloned() else {
+fn draw_search_preview(frame: &mut Frame, app: &App, ctx: &mut DrawCtx<'_>, area: Rect) -> bool {
+  let inner = draw_panel(frame, app, area, "preview");
+  let Some(result) = app.search.selected_match() else {
     frame.render_widget(
-      Paragraph::new("No search result selected").style(base),
+      Paragraph::new("No search result selected").style(base_style(app)),
       inner,
     );
     return true;
   };
-  draw_highlighted_page(
-    frame,
-    app,
-    pages,
-    renderer,
-    tx,
-    &result,
-    inner,
-    obscured_areas,
-    overlays,
-    frame_message,
-    preserve_overlays,
-    preserve_areas,
-    drawn_render_keys,
-  )
+  draw_highlighted_page(frame, app, ctx, result, inner)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_highlighted_page(
   frame: &mut Frame,
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut DrawCtx<'_>,
   result: &PdfSearchMatch,
   area: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
 ) -> bool {
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  let image_area = super::page::fitted_page_area(
-    area,
-    app.terminal_cell_pixels,
-    app.page_dimensions(result.page_index),
-  );
+  let (image_area, (target_width, target_height)) =
+    fitted_page_request(app, result.page_index, area);
   if image_area.width == 0 || image_area.height == 0 {
     return true;
   }
-  if super::page::area_intersects_any(image_area, obscured_areas) {
-    return true;
-  }
-  let (target_width, target_height) = super::page::page_target_pixels(
-    image_area.width,
-    image_area.height,
-    app.terminal_cell_pixels,
-    app.page_dimensions(result.page_index),
-  );
-  pages.request(result.page_index, target_width, target_height, tx);
-  if let Some(error) = app
-    .page_errors
-    .get(result.page_index)
-    .and_then(|error| error.as_ref())
-  {
-    super::page::draw_centered(
-      frame,
-      image_area,
-      format!("page {} failed\n{error}", result.page_index + 1),
-    );
-    return true;
-  }
-  let Some(page) = app
+  ctx
     .pages
-    .get(result.page_index)
-    .and_then(|page| page.as_ref())
-  else {
-    super::page::draw_image_pending(
-      frame,
-      image_area,
-      renderer,
-      format!("rendering page {}", result.page_index + 1),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
-    return false;
+    .request(result.page_index, target_width, target_height, ctx.tx);
+  let Some(page) = ready_page(frame, app, ctx, result.page_index, image_area) else {
+    return app.page_error(result.page_index).is_some();
   };
-  let highlighted = match search::highlighted_page_image(
-    &app.settings.cache_dir,
-    page,
-    result,
-    app.settings.config.render.search_highlight_cache_max_bytes,
-  ) {
-    Ok(highlighted) => highlighted,
+  let steps = [OverlayStep::SearchHighlight(result.clone())];
+  let (highlighted, highlight_ready) = match overlaid(ctx, page, &steps) {
+    Ok(overlaid) => overlaid,
     Err(error) => {
-      super::page::draw_centered(
+      draw_centered(
         frame,
         image_area,
         format!("search highlight failed\n{error}"),
@@ -359,34 +216,10 @@ fn draw_highlighted_page(
       return true;
     }
   };
-  let request = renderer.request(
-    &highlighted,
-    image_area.width,
-    image_area.height,
-    RenderKind::Fit,
-    tx,
-  );
-  if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, false) {
-    if let Some(rendered) = renderer.get(&rendered_key) {
-      super::page::draw_rendered_page(frame, image_area, rendered, overlays);
-      drawn_render_keys.push(rendered_key);
-    }
-    true
-  } else if let Some(error) = renderer.failure(&request.cache_key) {
-    super::page::draw_centered(frame, image_area, format!("render failed\n{error}"));
-    true
-  } else {
-    super::page::draw_image_pending(
-      frame,
-      image_area,
-      renderer,
-      format!("drawing highlighted page {}", result.page_index + 1),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
-    false
-  }
+  let drawn = draw_image(frame, ctx, &highlighted, image_area, || {
+    format!("drawing highlighted page {}", result.page_index + 1)
+  });
+  drawn && highlight_ready
 }
 
 fn context_window_start(text: &str, match_start: usize, width: usize) -> usize {
@@ -416,6 +249,15 @@ fn context_window_end(text: &str, start: usize, width: usize) -> usize {
     end = start + offset + ch.len_utf8();
   }
   end
+}
+
+/// Largest char boundary of `text` at or below `index`.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+  let mut index = index.min(text.len());
+  while !text.is_char_boundary(index) {
+    index -= 1;
+  }
+  index
 }
 
 fn text_slice(text: &str, start: usize, end: usize) -> String {

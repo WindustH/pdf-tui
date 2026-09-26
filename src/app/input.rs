@@ -1,43 +1,73 @@
-use std::path::PathBuf;
+//! Routing terminal input: keys and mouse events become actions of the
+//! current view, the prompt, or an open dialog.
 
 use crossterm::event::{Event, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use framework_tui::{
-  CommandCompletion, MatchResult, Prompt, PromptInputResult, current_word_start,
-  filter_completion_candidates, handle_prompt_key as framework_handle_prompt_key,
+  MatchResult, PromptInputResult, handle_prompt_key as framework_handle_prompt_key,
   handle_prompt_paste as framework_handle_prompt_paste, key_event_to_token,
 };
-use ratatui::layout::{Constraint, Direction, Rect};
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
-  bookmarks, cache, config,
-  event::{
-    AsyncEvent, BookmarksWriteOutcome, CacheClearOutcome, DocumentReload, DocumentReloadOutcome,
-    MetadataWriteOutcome, SearchIndexOutcome,
-  },
-  metadata,
-  pdf::PdfDocument,
-  search,
+  event::AsyncEvent,
+  geometry::{contains, safe_inner, split_panels},
 };
 
-use super::{
-  App, CompletionRedrawState, ConfirmDialog, EditorRequest, InputRedrawState, PromptRedrawState,
-  ViewMode,
-};
+use super::{App, ViewMode};
 
-const COMMAND_NAMES: &[&str] = &[
-  "clear-cache",
-  "bookmarks",
-  "help",
-  "layout",
-  "layout-use",
-  "metadata",
-  "quit",
-  "refresh",
-  "search",
-  "selection",
-  "write-config",
-];
+/// Everything input can change that is visible on screen. Comparing it
+/// before and after an event decides whether a redraw is needed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputRedrawState {
+  scroll: u32,
+  grid_start_page: usize,
+  focused_page: usize,
+  view: ViewMode,
+  metadata_scroll: u16,
+  bookmarks_selected: Option<usize>,
+  bookmarks_scroll: u16,
+  bookmarks_expanded_len: usize,
+  bookmarks_left_ratio: u16,
+  bookmarks_right_ratio: u16,
+  search_input: String,
+  search_cursor: usize,
+  search_results_len: usize,
+  search_selected: Option<usize>,
+  viewer_search_highlight: bool,
+  search_scroll: u16,
+  search_index_loading: bool,
+  search_index_error: Option<String>,
+  selection_anchor_active: bool,
+  selection_anchor_state: Option<String>,
+  selections_len: usize,
+  selection_index: Option<usize>,
+  selection_copy_text_pending: bool,
+  selection_copy_image_pending: bool,
+  confirm: bool,
+  key_help: bool,
+  editor_request: bool,
+  layout: String,
+  message: String,
+  frame_navigation_locked: bool,
+  quit: bool,
+  prompt: Option<PromptRedrawState>,
+  completion: Option<CompletionRedrawState>,
+  key_hint_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromptRedrawState {
+  prefix: String,
+  input: String,
+  cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionRedrawState {
+  candidates: Vec<String>,
+  selected: usize,
+}
 
 impl App {
   pub fn handle_input(&mut self, input: Event, tx: &mpsc::UnboundedSender<AsyncEvent>) -> bool {
@@ -89,16 +119,16 @@ impl App {
         }
         MouseEventKind::ScrollUp if self.view == ViewMode::Metadata => self.metadata_scroll_up(),
         MouseEventKind::ScrollDown if self.view == ViewMode::Bookmarks => {
-          self.handle_frame_navigation(|app| app.bookmarks_next())
+          self.handle_frame_navigation(|app| app.bookmarks.select_visible_delta(1))
         }
         MouseEventKind::ScrollUp if self.view == ViewMode::Bookmarks => {
-          self.handle_frame_navigation(|app| app.bookmarks_previous())
+          self.handle_frame_navigation(|app| app.bookmarks.select_visible_delta(-1))
         }
         MouseEventKind::ScrollDown if self.view == ViewMode::Search => {
-          self.handle_frame_navigation(|app| app.search_next())
+          self.handle_frame_navigation(|app| app.select_search_delta(1))
         }
         MouseEventKind::ScrollUp if self.view == ViewMode::Search => {
-          self.handle_frame_navigation(|app| app.search_previous())
+          self.handle_frame_navigation(|app| app.select_search_delta(-1))
         }
         MouseEventKind::ScrollDown if self.view == ViewMode::Selection => self.selection_next(),
         MouseEventKind::ScrollUp if self.view == ViewMode::Selection => self.selection_previous(),
@@ -112,70 +142,64 @@ impl App {
     force_redraw || before != self.input_redraw_state()
   }
 
+  /// A click selects a bookmark; clicking the selected one toggles it.
   fn handle_bookmarks_mouse_click(&mut self, mouse: MouseEvent) {
-    if self.frame_sync_navigation_blocks() {
-      return;
-    }
-    let before = self.frame_navigation_state();
-    let Some(index) = self.bookmark_index_at(mouse.column, mouse.row) else {
-      return;
-    };
-    if self.bookmarks_selected == Some(index) {
-      self.bookmarks_toggle();
-    } else {
-      self.bookmarks_selected = Some(index);
-    }
-    if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
-      self.lock_frame_navigation_if_enabled();
-    }
+    self.handle_frame_navigation(|app| {
+      let Some(index) = app.bookmark_index_at(mouse.column, mouse.row) else {
+        return;
+      };
+      if app.bookmarks.selected == Some(index) {
+        app.bookmarks.toggle_selected();
+      } else {
+        app.bookmarks.selected = Some(index);
+      }
+    });
   }
 
+  /// A click selects a result; clicking the selected one opens it.
   fn handle_search_mouse_click(&mut self, mouse: MouseEvent) {
-    if self.frame_sync_navigation_blocks() {
-      return;
-    }
-    let before = self.frame_navigation_state();
-    let Some(index) = self.search_result_index_at(mouse.column, mouse.row) else {
-      return;
-    };
-    if self.search_selected == Some(index) {
-      self.search_open();
-    } else {
-      self.search_selected = Some(index);
-      self.make_search_preload_ready_now();
-    }
-    if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
-      self.lock_frame_navigation_if_enabled();
-    }
+    self.handle_frame_navigation(|app| {
+      let Some(index) = app.search_result_index_at(mouse.column, mouse.row) else {
+        return;
+      };
+      if app.search.selected == Some(index) {
+        app.search_open();
+      } else {
+        app.search.selected = Some(index);
+        app.search.make_preload_ready_now();
+      }
+    });
   }
 
   fn bookmark_index_at(&self, column: u16, row: u16) -> Option<usize> {
-    if self.bookmarks_error.is_some() || self.bookmarks.is_empty() {
+    if self.bookmarks.error.is_some() || self.bookmarks.entries.is_empty() {
       return None;
     }
-    let tree = self.left_panel_area(self.bookmarks_left_ratio, self.bookmarks_right_ratio)?;
-    let inner = bordered_inner(tree);
+    let (tree, _) = split_panels(
+      self.viewport?,
+      self.bookmarks.left_ratio,
+      self.bookmarks.right_ratio,
+    );
+    let inner = safe_inner(tree, 1, 1);
     if !contains(inner, column, row) {
       return None;
     }
-    let row_offset = row.saturating_sub(inner.y) as usize;
     self
-      .visible_bookmark_indices()
-      .get(self.bookmarks_scroll as usize + row_offset)
-      .copied()
+      .bookmarks
+      .index_at_row(usize::from(row.saturating_sub(inner.y)))
   }
 
   fn search_result_index_at(&self, column: u16, row: u16) -> Option<usize> {
-    let query = self.search_prompt.buffer().input.trim();
-    if query.is_empty()
-      || self.search_index_loading
-      || self.search_index_error.is_some()
-      || self.search_results.is_empty()
+    let search = &self.search;
+    if search.query().is_empty()
+      || search.index_loading
+      || search.index_error.is_some()
+      || search.results.is_empty()
     {
       return None;
     }
-    let panel = self.left_panel_area(self.search_left_ratio, self.search_right_ratio)?;
-    let inner = bordered_inner(panel);
+    let (panel, _) = split_panels(self.viewport?, search.left_ratio, search.right_ratio);
+    let inner = safe_inner(panel, 1, 1);
     if inner.height <= 1 {
       return None;
     }
@@ -189,22 +213,7 @@ impl App {
       return None;
     }
     let row_offset = row.saturating_sub(results.y) as usize;
-    let index = self.search_scroll as usize + row_offset;
-    (index < self.search_results.len()).then_some(index)
-  }
-
-  fn left_panel_area(&self, left_ratio: u16, right_ratio: u16) -> Option<Rect> {
-    let area = self.viewport?;
-    let left_ratio = u32::from(left_ratio.max(1));
-    let right_ratio = u32::from(right_ratio.max(1));
-    let chunks = ratatui::layout::Layout::default()
-      .direction(Direction::Horizontal)
-      .constraints([
-        Constraint::Ratio(left_ratio, left_ratio.saturating_add(right_ratio)),
-        Constraint::Ratio(right_ratio, left_ratio.saturating_add(right_ratio)),
-      ])
-      .split(area);
-    chunks.first().copied()
+    search.result_at_row(row_offset)
   }
 
   fn input_redraw_state(&self) -> InputRedrawState {
@@ -225,25 +234,25 @@ impl App {
       focused_page: self.focused_page,
       view: self.view,
       metadata_scroll: self.metadata_scroll,
-      bookmarks_selected: self.bookmarks_selected,
-      bookmarks_scroll: self.bookmarks_scroll,
-      bookmarks_expanded_len: self.bookmarks_expanded.len(),
-      bookmarks_left_ratio: self.bookmarks_left_ratio,
-      bookmarks_right_ratio: self.bookmarks_right_ratio,
-      search_input: self.search_prompt.buffer().input.clone(),
-      search_cursor: self.search_prompt.buffer().cursor,
-      search_results_len: self.search_results.len(),
-      search_selected: self.search_selected,
-      viewer_search_highlight: self.viewer_search_highlight.is_some(),
-      search_scroll: self.search_scroll,
-      search_index_loading: self.search_index_loading,
-      search_index_error: self.search_index_error.clone(),
-      selection_anchor_active: self.selection_anchor.is_some(),
+      bookmarks_selected: self.bookmarks.selected,
+      bookmarks_scroll: self.bookmarks.scroll,
+      bookmarks_expanded_len: self.bookmarks.expanded.len(),
+      bookmarks_left_ratio: self.bookmarks.left_ratio,
+      bookmarks_right_ratio: self.bookmarks.right_ratio,
+      search_input: self.search.prompt.buffer().input.clone(),
+      search_cursor: self.search.prompt.buffer().cursor,
+      search_results_len: self.search.results.len(),
+      search_selected: self.search.selected,
+      viewer_search_highlight: self.search.viewer_highlight.is_some(),
+      search_scroll: self.search.scroll,
+      search_index_loading: self.search.index_loading,
+      search_index_error: self.search.index_error.clone(),
+      selection_anchor_active: self.selection.anchor.is_some(),
       selection_anchor_state: self.selection_anchor_state(),
-      selections_len: self.selections.len(),
-      selection_index: self.selection_index,
-      selection_copy_text_pending: self.selection_copy_text_pending,
-      selection_copy_image_pending: self.selection_copy_image_pending,
+      selections_len: self.selection.history.len(),
+      selection_index: self.selection.index,
+      selection_copy_text_pending: self.selection.copy_text_pending,
+      selection_copy_image_pending: self.selection.copy_image_pending,
       confirm: self.confirm.is_some(),
       key_help: self.key_help,
       editor_request: self.editor_request.is_some(),
@@ -293,7 +302,7 @@ impl App {
 
     match action {
       "quit" => self.quit = true,
-      "back" if self.selection_anchor.is_some() => self.cancel_selection_anchor(),
+      "back" if self.selection.anchor.is_some() => self.cancel_selection_anchor(),
       "back" => self.back_to_viewer(),
       "command" => self.start_command(),
       "help" => self.show_key_help(),
@@ -321,22 +330,36 @@ impl App {
       "metadata_scroll_up" => self.metadata_scroll_up(),
       "metadata_page_down" => self.metadata_page_down(),
       "metadata_page_up" => self.metadata_page_up(),
-      "bookmarks_next" => self.handle_frame_navigation(|app| app.bookmarks_next()),
-      "bookmarks_previous" => self.handle_frame_navigation(|app| app.bookmarks_previous()),
-      "bookmarks_page_down" => self.handle_frame_navigation(|app| app.bookmarks_page_down()),
-      "bookmarks_page_up" => self.handle_frame_navigation(|app| app.bookmarks_page_up()),
-      "bookmarks_toggle" => self.bookmarks_toggle(),
-      "bookmarks_toggle_all" => self.bookmarks_toggle_all(),
+      "bookmarks_next" => self.handle_frame_navigation(|app| app.bookmarks.select_visible_delta(1)),
+      "bookmarks_previous" => {
+        self.handle_frame_navigation(|app| app.bookmarks.select_visible_delta(-1))
+      }
+      "bookmarks_page_down" => self.handle_frame_navigation(|app| {
+        let step = app.bookmarks_page_step();
+        app.bookmarks.select_visible_delta(step)
+      }),
+      "bookmarks_page_up" => self.handle_frame_navigation(|app| {
+        let step = app.bookmarks_page_step();
+        app.bookmarks.select_visible_delta(-step)
+      }),
+      "bookmarks_toggle" => self.bookmarks.toggle_selected(),
+      "bookmarks_toggle_all" => self.bookmarks.toggle_all(),
       "bookmarks_open" => self.handle_frame_navigation(|app| app.bookmarks_open()),
-      "bookmarks_panel_narrower" => self.bookmarks_panel_narrower(),
-      "bookmarks_panel_wider" => self.bookmarks_panel_wider(),
-      "search_next" => self.handle_frame_navigation(|app| app.search_next()),
-      "search_previous" => self.handle_frame_navigation(|app| app.search_previous()),
-      "search_page_down" => self.handle_frame_navigation(|app| app.search_page_down()),
-      "search_page_up" => self.handle_frame_navigation(|app| app.search_page_up()),
+      "bookmarks_panel_narrower" => self.bookmarks.narrow_panel(),
+      "bookmarks_panel_wider" => self.bookmarks.widen_panel(),
+      "search_next" => self.handle_frame_navigation(|app| app.select_search_delta(1)),
+      "search_previous" => self.handle_frame_navigation(|app| app.select_search_delta(-1)),
+      "search_page_down" => self.handle_frame_navigation(|app| {
+        let step = app.search_page_step();
+        app.select_search_delta(step)
+      }),
+      "search_page_up" => self.handle_frame_navigation(|app| {
+        let step = app.search_page_step();
+        app.select_search_delta(-step)
+      }),
       "search_open" => self.handle_frame_navigation(|app| app.search_open()),
       "selection_mark" => self.set_message("selection mark requires a mouse position"),
-      "selection_cancel" if self.selection_anchor.is_some() => self.cancel_selection_anchor(),
+      "selection_cancel" if self.selection.anchor.is_some() => self.cancel_selection_anchor(),
       "selection_cancel" if self.view == ViewMode::Selection => self.back_to_viewer(),
       "selection_cancel" => self.cancel_selection_anchor(),
       "selection_next" => self.selection_next(),
@@ -383,7 +406,7 @@ impl App {
     };
     match result {
       MatchResult::Action(action)
-        if action == "selection_mark" && self.selection_anchor.is_some() =>
+        if action == "selection_mark" && self.selection.anchor.is_some() =>
       {
         self.handle_selection_mouse_click(mouse, tx)
       }
@@ -400,7 +423,7 @@ impl App {
     let clear_search_highlight = self.view == ViewMode::Viewer;
     navigate(self);
     if clear_search_highlight && self.view == ViewMode::Viewer {
-      self.clear_viewer_search_highlight();
+      self.search.viewer_highlight = None;
     }
     if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {
       self.lock_frame_navigation_if_enabled();
@@ -417,8 +440,8 @@ impl App {
       self.scroll,
       self.grid_start_page,
       self.focused_page,
-      self.bookmarks_selected,
-      self.search_selected,
+      self.bookmarks.selected,
+      self.search.selected,
     )
   }
 
@@ -437,16 +460,16 @@ impl App {
       }
     }
 
-    let before = self.search_prompt.buffer().input.clone();
+    let before = self.search.prompt.buffer().input.clone();
     let result = framework_handle_prompt_key(
-      &mut self.search_prompt,
-      &mut self.search_command_state,
+      &mut self.search.prompt,
+      &mut self.search.command_state,
       &self.keymap,
       key,
     );
     match result {
       PromptInputResult::Changed => {
-        if self.search_prompt.buffer().input != before {
+        if self.search.prompt.buffer().input != before {
           self.refresh_search_results();
           self.defer_search_preload_after_input(tx);
         }
@@ -463,13 +486,13 @@ impl App {
   }
 
   fn handle_search_paste(&mut self, value: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let before = self.search_prompt.buffer().input.clone();
+    let before = self.search.prompt.buffer().input.clone();
     let result = framework_handle_prompt_paste(
-      &mut self.search_prompt,
-      &mut self.search_command_state,
+      &mut self.search.prompt,
+      &mut self.search.command_state,
       value,
     );
-    if result == PromptInputResult::Changed && self.search_prompt.buffer().input != before {
+    if result == PromptInputResult::Changed && self.search.prompt.buffer().input != before {
       self.refresh_search_results();
       self.defer_search_preload_after_input(tx);
     }
@@ -507,422 +530,14 @@ impl App {
     }
   }
 
-  fn apply_confirm(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let Some(confirm) = self.confirm.take() else {
-      return;
-    };
-    match confirm {
-      ConfirmDialog::MetadataWrite { edit } => {
-        let path = self.document.path.clone();
-        let cache_dir = self.document.page_cache_dir.clone();
-        let render = self.settings.config.render.clone();
-        let changed_tags = edit.tags.len();
-        let tx = tx.clone();
-        self.set_message(format!("applying metadata edit: {changed_tags} tag(s)"));
-        tokio::task::spawn_blocking(move || {
-          let result = (|| {
-            metadata::write_pdf_metadata_with_exiftool(&path, &edit.tags)?;
-            reload_document(path, cache_dir, render)
-          })();
-          let _ = tx.send(AsyncEvent::MetadataWrite(MetadataWriteOutcome {
-            result,
-            changed_tags,
-          }));
-        });
-      }
-      ConfirmDialog::BookmarksWrite { edit } => {
-        let path = self.document.path.clone();
-        let cache_dir = self.document.page_cache_dir.clone();
-        let app_cache_dir = self.settings.cache_dir.clone();
-        let render = self.settings.config.render.clone();
-        let pdftk_bin = self.settings.config.render.pdftk_bin.clone();
-        let changed_bookmarks = edit.new_count();
-        let tx = tx.clone();
-        self.set_message(format!(
-          "applying bookmark edit: {changed_bookmarks} entries"
-        ));
-        tokio::task::spawn_blocking(move || {
-          let result = (|| {
-            bookmarks::write_pdf_bookmarks_with_pdftk(
-              &path,
-              &pdftk_bin,
-              &app_cache_dir,
-              &edit.bookmarks,
-            )?;
-            reload_document(path, cache_dir, render)
-          })();
-          let _ = tx.send(AsyncEvent::BookmarksWrite(BookmarksWriteOutcome {
-            result,
-            changed_bookmarks,
-          }));
-        });
-      }
-    }
-  }
-
-  fn start_command(&mut self) {
-    self.command_state.reset_prompt_state();
-    self.prompt = Some(Prompt::command(String::new()));
-    self.refresh_command_completion();
-  }
-
-  fn handle_prompt_key(&mut self, key: KeyEvent, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let result = if let Some(prompt) = self.prompt.as_mut() {
-      framework_handle_prompt_key(prompt, &mut self.command_state, &self.keymap, key)
-    } else {
-      PromptInputResult::Unhandled
-    };
-    self.handle_prompt_input_result(result, Some(tx));
-  }
-
-  fn handle_prompt_paste(&mut self, value: &str) {
-    if let Some(prompt) = self.prompt.as_mut() {
-      let result = framework_handle_prompt_paste(prompt, &mut self.command_state, value);
-      self.handle_prompt_input_result(result, None);
-    }
-  }
-
-  fn handle_prompt_input_result(
-    &mut self,
-    result: PromptInputResult,
-    tx: Option<&mpsc::UnboundedSender<AsyncEvent>>,
-  ) {
-    match result {
-      PromptInputResult::Unhandled => {}
-      PromptInputResult::Changed => self.refresh_command_completion(),
-      PromptInputResult::Cancel => self.cancel_prompt(),
-      PromptInputResult::Submit => {
-        if let Some(tx) = tx {
-          self.submit_prompt(tx);
-        }
-      }
-      PromptInputResult::EditInEditor { .. } => {
-        self.set_message("external editor input is not supported in pdf-tui");
-      }
-      PromptInputResult::UnknownAction(action) if action == "help" => self.show_key_help(),
-      PromptInputResult::UnknownAction(action) => {
-        self.set_message(format!("unknown input action: {action}"));
-      }
-    }
-  }
-
-  fn cancel_prompt(&mut self) {
-    self.prompt = None;
-    self.command_state.reset_prompt_state();
-    self.key_dispatcher.clear();
-    self.set_message("cancelled");
-  }
-
-  fn submit_prompt(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let Some(prompt) = self.prompt.take() else {
-      return;
-    };
-    let command = prompt.buffer().input.trim().to_string();
-    self.command_state.reset_prompt_state();
-    self.key_dispatcher.clear();
-    if command.is_empty() {
-      return;
-    }
-    self.command_state.push_history(command.clone());
-    self.execute_command(&command, tx);
-  }
-
-  fn refresh_command_completion(&mut self) {
-    let Some(prompt) = &self.prompt else {
-      self.command_state.clear_completion();
-      return;
-    };
-    if !prompt.is_command() {
-      self.command_state.clear_completion();
-      return;
-    }
-    let buffer = prompt.buffer();
-    let completion = self.command_completion_for(&buffer.input, buffer.cursor);
-    self
-      .command_state
-      .set_completion_preserving_selection(completion);
-  }
-
-  fn command_completion_for(&self, input: &str, cursor: usize) -> Option<CommandCompletion> {
-    let cursor = cursor.min(input.len());
-    let before_cursor = input.get(..cursor)?;
-    let normalized = before_cursor.trim_start_matches(':');
-    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
-    let ends_with_space = normalized.chars().last().is_some_and(char::is_whitespace);
-    let word_start = current_word_start(input, cursor);
-    let prefix = if ends_with_space {
-      ""
-    } else {
-      input.get(word_start..cursor).unwrap_or_default()
-    };
-
-    if tokens.is_empty() || (tokens.len() == 1 && !ends_with_space) {
-      return Some(CommandCompletion::new(
-        word_start,
-        cursor,
-        prefix,
-        filter_completion_candidates(COMMAND_NAMES.iter().copied(), prefix),
-        true,
-        0,
-      ));
-    }
-
-    match tokens[0] {
-      "layout" | "layout-use" => {
-        if tokens.len() > 2 || (tokens.len() == 2 && ends_with_space) {
-          return None;
-        }
-        let replace_start = if ends_with_space { cursor } else { word_start };
-        let prefix = if ends_with_space { "" } else { prefix };
-        Some(CommandCompletion::new(
-          replace_start,
-          cursor,
-          prefix,
-          filter_completion_candidates(self.settings.config.layout.presets.keys(), prefix),
-          true,
-          0,
-        ))
-      }
-      _ => None,
-    }
-  }
-
-  fn execute_command(&mut self, command: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let mut parts = command.split_whitespace().collect::<Vec<_>>();
-    if parts.is_empty() {
-      return;
-    }
-    match parts[0] {
-      "q" | "quit" => self.quit = true,
-      "layout" => {
-        parts.remove(0);
-        self.execute_layout_parts(&parts, true);
-      }
-      "layout-use" | "layout_use" => {
-        parts.remove(0);
-        self.execute_layout_parts(&parts, false);
-      }
-      "write-config" | "write_config" => {
-        match config::write_app_config_sync(&self.settings.config_path, &self.settings.config) {
-          Ok(()) => self.set_message(format!("wrote {}", self.settings.config_path.display())),
-          Err(error) => self.set_message(format!("write-config failed: {error}")),
-        }
-      }
-      "clear-cache" | "clear_cache" => {
-        if parts.len() > 1 {
-          self.set_message("usage: clear-cache");
-        } else {
-          self.request_clear_cache(tx);
-        }
-      }
-      "metadata" => self.enter_metadata_view(),
-      "bookmarks" => self.enter_bookmarks_view(),
-      "search" => self.enter_search_view(tx),
-      "selection" => self.enter_selection_view(),
-      "refresh" => self.request_refresh(tx),
-      "help" => self.show_key_help(),
-      other => self.set_message(format!("unknown command: {other}")),
-    }
-  }
-
-  fn request_clear_cache(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    let cache_dir = self.settings.cache_dir.clone();
-    let tx = tx.clone();
-    self.set_message("clearing cache...");
-    tokio::spawn(async move {
-      let result = cache::clear_cache(&cache_dir)
-        .await
-        .map_err(|error| error.to_string());
-      let _ = tx.send(AsyncEvent::CacheClear(CacheClearOutcome { result }));
-    });
-  }
-
-  pub fn request_refresh(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self.refresh_in_flight {
-      self.refresh_queued = true;
-      self.set_message("refresh already running; queued one more refresh");
-      return;
-    }
-    let path = self.document.path.clone();
-    let cache_dir = self.document.page_cache_dir.clone();
-    let render = self.settings.config.render.clone();
-    let tx = tx.clone();
-    self.refresh_in_flight = true;
-    self.set_message("refreshing document...");
-    tokio::task::spawn_blocking(move || {
-      let result = reload_document(path, cache_dir, render);
-      let _ = tx.send(AsyncEvent::Refresh(DocumentReloadOutcome { result }));
-    });
-  }
-
-  pub fn request_search_index(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self.search_index.is_some() || self.search_index_loading {
-      return;
-    }
-    self.search_index_loading = true;
-    self.search_index_error = None;
-    let path = self.document.path.clone();
-    let cache_dir = self.settings.cache_dir.clone();
-    let pdftotext_bin = self.settings.config.render.pdftotext_bin.clone();
-    let page_count = self.document.page_count;
-    let source_size_bytes = self.document.size_bytes;
-    let source_modified_nanos = self.document.modified_nanos;
-    let tx = tx.clone();
-    self.set_message("building search index...");
-    tokio::spawn(async move {
-      let result = search::build_search_index(
-        &path,
-        &cache_dir,
-        &pdftotext_bin,
-        page_count,
-        source_size_bytes,
-        source_modified_nanos,
-      )
-      .await;
-      let _ = tx.send(AsyncEvent::SearchIndex(SearchIndexOutcome {
-        source_size_bytes,
-        source_modified_nanos,
-        result,
-      }));
-    });
-  }
-
-  fn enter_metadata_view(&mut self) {
-    self.view = ViewMode::Metadata;
-    self.clear_frame_navigation_lock();
-    self.metadata_scroll = 0;
-    self.key_dispatcher.clear();
-    if let Some(error) = &self.metadata_error {
-      self.set_message(format!("metadata unavailable: {error}"));
-    } else {
-      self.set_message("metadata");
-    }
-  }
-
   fn back_to_viewer(&mut self) {
     self.view = ViewMode::Viewer;
     self.metadata_scroll = 0;
-    self.selection_anchor = None;
-    self.selection_second_anchor = None;
-    self.selection_mouse_press = None;
-    self.selection_draft_index = None;
-    self.selection_display = None;
+    self.selection.leave_view();
     self.key_dispatcher.clear();
     self.lock_frame_navigation_if_enabled();
     self.set_message("ready");
   }
-
-  fn start_metadata_edit(&mut self) {
-    if self.view != ViewMode::Metadata {
-      self.enter_metadata_view();
-      return;
-    }
-    let draft = metadata::metadata_edit_draft(&self.document.path, &self.metadata);
-    self.set_editor_request(EditorRequest::Metadata {
-      original: self.metadata.clone(),
-      draft,
-    });
-    self.set_message("editing metadata");
-  }
-
-  fn metadata_scroll_down(&mut self) {
-    self.metadata_scroll = self.metadata_scroll.saturating_add(1);
-  }
-
-  fn metadata_scroll_up(&mut self) {
-    self.metadata_scroll = self.metadata_scroll.saturating_sub(1);
-  }
-
-  fn metadata_page_down(&mut self) {
-    self.metadata_scroll = self
-      .metadata_scroll
-      .saturating_add(self.viewport_height.max(1));
-  }
-
-  fn metadata_page_up(&mut self) {
-    self.metadata_scroll = self
-      .metadata_scroll
-      .saturating_sub(self.viewport_height.max(1));
-  }
-
-  fn execute_layout_command(&mut self, command: &str, persist: bool) {
-    let parts = command.split_whitespace().collect::<Vec<_>>();
-    self.execute_layout_parts(&parts, persist);
-  }
-
-  fn execute_layout_parts(&mut self, parts: &[&str], persist: bool) {
-    let Some((name, args)) = parts.split_first() else {
-      self.set_message("usage: layout <scroll|grid> ...");
-      return;
-    };
-    let preserved_progress = self.current_progress().or(self.pending_progress);
-    let result = if persist {
-      self.settings.config.layout.set_active_from_args(name, args)
-    } else {
-      let mut layout = self.settings.config.layout.clone();
-      layout.set_active_from_args(name, args)
-    };
-    match result {
-      Ok(layout) => {
-        self.layout = layout;
-        // Drop the scroll layout built for the previous geometry: it is
-        // stale now, and applying the preserved progress against its row
-        // indices would land the new layout at an arbitrary position.
-        // Clearing it routes the progress through `pending_progress`,
-        // which is resolved once the new scroll layout is built.
-        self.last_scroll_layout = None;
-        self.scroll = 0;
-        self.grid_start_page = 0;
-        self.focused_page = 0;
-        if let Some(progress) = preserved_progress {
-          self.set_progress_target(progress);
-        } else {
-          self.normalize_current_layout_state();
-        }
-        if persist {
-          match config::write_app_config_sync(&self.settings.config_path, &self.settings.config) {
-            Ok(()) => self.set_message(format!("layout saved: {}", self.layout.label())),
-            Err(error) => self.set_message(format!("layout changed, save failed: {error}")),
-          }
-        } else {
-          self.set_message(format!("layout use: {}", self.layout.label()));
-        }
-      }
-      Err(error) => self.set_message(error),
-    }
-  }
-}
-
-fn reload_document(
-  path: PathBuf,
-  cache_dir: PathBuf,
-  render: config::RenderConfig,
-) -> Result<DocumentReload, String> {
-  let document =
-    PdfDocument::open(path.clone(), cache_dir, &render).map_err(|error| error.to_string())?;
-  let metadata = metadata::read_pdf_metadata(&path);
-  let bookmarks = bookmarks::read_pdf_bookmarks(&path, &render.pdftk_bin, document.page_count);
-  Ok(DocumentReload {
-    document,
-    metadata,
-    bookmarks,
-  })
-}
-
-fn bordered_inner(area: Rect) -> Rect {
-  Rect {
-    x: area.x.saturating_add(1),
-    y: area.y.saturating_add(1),
-    width: area.width.saturating_sub(2),
-    height: area.height.saturating_sub(2),
-  }
-}
-
-fn contains(area: Rect, column: u16, row: u16) -> bool {
-  column >= area.x
-    && column < area.x.saturating_add(area.width)
-    && row >= area.y
-    && row < area.y.saturating_add(area.height)
 }
 
 fn mouse_button_token(button: MouseButton) -> &'static str {
