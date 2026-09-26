@@ -85,13 +85,22 @@ fn app_cache_dir() -> PathBuf {
 fn platform_config_dir() -> PathBuf {
   env_path("XDG_CONFIG_HOME")
     .or_else(|| env_path("HOME").map(|home| home.join(".config")))
+    .or_else(|| windows_app_data("APPDATA"))
     .unwrap_or_else(|| PathBuf::from(".config"))
 }
 
 fn platform_cache_dir() -> PathBuf {
   env_path("XDG_CACHE_HOME")
     .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
+    .or_else(|| windows_app_data("LOCALAPPDATA"))
     .unwrap_or_else(|| PathBuf::from(".cache"))
+}
+
+/// Native Windows sets no `HOME` by default. Fall back to the standard
+/// application data roots there instead of a directory relative to the
+/// working directory.
+fn windows_app_data(name: &str) -> Option<PathBuf> {
+  if cfg!(windows) { env_path(name) } else { None }
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -222,7 +231,7 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render" => Some("PDF conversion, terminal rendering, preloading, and cache settings."),
     "render.pdf_raster_backend" => Some("PDF page raster backend: poppler, mutool, or pdfium."),
     "render.pdf_raster_batch_pages" => Some("Number of PDF pages requested per raster batch."),
-    "render.pdfinfo_bin" => Some("Command used to read PDF metadata."),
+    "render.pdfinfo_bin" => Some("Command used to read the page count and page sizes."),
     "render.pdftoppm_bin" => Some("Command used for the poppler raster backend."),
     "render.mutool_bin" => Some("Command used for the mutool raster backend."),
     "render.mutool_band_height" => {
@@ -231,9 +240,11 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render.mutool_threads" => Some("Rendering threads passed to mutool draw -T."),
     "render.mutool_parallel" => Some("Enable mutool draw -P parallel interpretation/rendering."),
     "render.pdfium_library_path" => Some("Optional path to libpdfium or its containing directory."),
-    "render.pdftk_bin" => Some("Command used for PDF toolkit operations when available."),
+    "render.pdftk_bin" => Some("Command used to read and write PDF bookmarks."),
     "render.pdftotext_bin" => Some("Command used to extract searchable text from PDFs."),
-    "render.page_dpi" => Some("DPI used when rasterizing PDF pages before terminal rendering."),
+    "render.page_dpi" => Some(
+      "Part of the page cache key only; pages are rasterized at the pixel size of their terminal area.",
+    ),
     "render.chafa_bin" => Some("Command used to render rasterized pages in the terminal."),
     "render.auto_detect" => {
       Some("Detect terminal graphics capability and adjust Chafa arguments automatically.")
@@ -241,7 +252,9 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render.chafa_args" => {
       Some("Extra arguments passed to Chafa after terminal auto-detection is applied.")
     }
-    "render.cache_max_bytes" => Some("Maximum disk space used for the render cache."),
+    "render.cache_max_bytes" => {
+      Some("Maximum disk space for the whole cache, enforced at startup (0 disables the limit).")
+    }
     "render.cache_compression_level" => Some("Compression level used for cached render data."),
     "render.cache_compression_threads" => {
       Some("Worker threads used when compressing cache entries.")
@@ -257,7 +270,7 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
       Some("Maximum RAM used for prepared page render data.")
     }
     "render.search_highlight_cache_max_bytes" => {
-      Some("Maximum RAM used for rendered search highlights.")
+      Some("Maximum disk space used for search highlight PNGs.")
     }
     "render.selection_cache_max_bytes" => {
       Some("Maximum disk space used for selection marker and crop PNGs.")
@@ -268,32 +281,37 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render.search_preload_idle_ms" => {
       Some("Delay after search text input before preloading search previews.")
     }
-    "render.max_concurrent" => Some("Maximum number of page render jobs running concurrently."),
-    "render.chafa_threads" => Some("Threads requested per Chafa render job."),
-    "render.preload_ahead" => Some("Number of pages ahead of the current page to preload."),
-    "render.preload_behind" => Some("Number of pages behind the current page to keep preloaded."),
-    "render.preload_slice_ahead" => Some("Number of page slices ahead to prepare."),
-    "render.preload_slice_behind" => Some("Number of page slices behind to keep prepared."),
-    "render.preload_terminal_ahead" => Some("Number of terminal-ready pages ahead to prepare."),
-    "render.preload_terminal_behind" => {
-      Some("Number of terminal-ready pages behind to keep prepared.")
+    "render.max_concurrent" => Some(
+      "Concurrent jobs per stage (page rasterizing, terminal rendering); one is kept for visible pages.",
+    ),
+    "render.chafa_threads" => Some("Threads requested per Chafa render job (0 lets Chafa decide)."),
+    "render.preload_ahead" => {
+      Some("Page PNGs to preload ahead of the view: scroll rows, grid pages, or list entries.")
     }
-    "render.passthrough" => Some("Optional Chafa passthrough mode, such as tmux."),
-    "render.zellij_sixel" => Some("Zellij SIXEL handling mode."),
+    "render.preload_behind" => Some("Page PNGs to preload behind the view."),
+    "render.preload_slice_ahead" => Some("Scroll rows ahead whose slice PNGs are prepared."),
+    "render.preload_slice_behind" => Some("Scroll rows behind whose slice PNGs are prepared."),
+    "render.preload_terminal_ahead" => Some("Entries ahead that are rendered for the terminal."),
+    "render.preload_terminal_behind" => Some("Entries behind that are rendered for the terminal."),
+    "render.passthrough" => {
+      Some("Ignored: terminal multiplexer passthrough is detected automatically.")
+    }
+    "render.zellij_sixel" => Some("Sixel under Zellij: off, auto (when probed), or on."),
     "behavior" => Some("Interactive behavior settings."),
-    "behavior.scroll_lines" => Some("Rows moved by one wheel or scroll key step."),
+    "behavior.scroll_lines" => Some("Unused; kept for compatibility."),
     "behavior.frame_sync_navigation_viewer" => {
-      Some("Keep the viewer frame synchronized while navigating.")
+      Some("Ignore viewer navigation until the current frame has finished rendering.")
     }
     "behavior.frame_sync_navigation_bookmarks" => {
-      Some("Keep the bookmarks frame synchronized while navigating.")
+      Some("Ignore bookmark navigation until the preview has finished rendering.")
     }
     "behavior.frame_sync_navigation_search" => {
-      Some("Keep the search frame synchronized while navigating.")
+      Some("Ignore search result navigation until the preview has finished rendering.")
     }
     "behavior.auto_refresh" => Some("Automatically refresh the PDF when the file changes."),
     "behavior.auto_refresh_poll_ms" => Some("Polling interval for detecting PDF file changes."),
     "behavior.auto_refresh_min_interval_ms" => Some("Minimum delay between automatic refreshes."),
+    "behavior.remember_reading_position" => Some("Reopen each document where it was last closed."),
     "behavior.bookmarks_left_ratio" => Some("Left pane width ratio in the bookmarks view."),
     "behavior.bookmarks_right_ratio" => Some("Right pane width ratio in the bookmarks view."),
     "behavior.search_left_ratio" => Some("Left pane width ratio in the search view."),

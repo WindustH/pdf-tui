@@ -1,42 +1,28 @@
 # Configuration
 
-Default configuration files are created on first run:
+## Files
 
-- `~/.config/pdf-tui/config.toml`
-- `~/.config/pdf-tui/keymap.toml`
-- `~/.config/pdf-tui/theme.toml`
+`pdf-tui` reads three files from its configuration directory:
 
-Generated `config.toml` files include comments for the available options. When
-new fields are added later, `pdf-tui` writes the missing defaults back using the
-same commented format; repeated preset fields share one explanation instead of
-duplicating the same comment for every preset.
+- `config.toml`: layout, rendering, and behavior (this page)
+- `keymap.toml`: key bindings ([Keymap](keymap.md))
+- `theme.toml`: colors ([Theme](theme.md))
 
-When existing configuration files are missing fields introduced by a newer
-version, `pdf-tui` normalizes them and writes the parsed defaults back.
-If a configuration file cannot be parsed or the active layout is no longer
-compatible, `pdf-tui` backs it up as `*.bak.<timestamp>` and writes a fresh
-default file.
+The directory is `$XDG_CONFIG_HOME/pdf-tui`, or `$HOME/.config/pdf-tui` when
+`XDG_CONFIG_HOME` is unset; on Windows without either variable it is
+`%APPDATA%\pdf-tui`. This applies to macOS too, so the files live in
+`~/.config/pdf-tui` there as well.
 
-## `config.toml`
+Missing files are created with the defaults. When a file lacks fields (for
+example after an upgrade), the missing values are filled in and the file is
+rewritten; `config.toml` is written with a comment above each field. A file
+that cannot be parsed, or whose active layout is invalid, is renamed to
+`<name>.bak.<timestamp>` and replaced by the defaults.
 
-Top-level tables:
-
-- `[layout]`
-- `[render]`
-- `[behavior]`
+Changes take effect on the next start. `:layout` and `:write-config` write
+`config.toml` from a running session.
 
 ## `[layout]`
-
-Layout has one active preset plus shared style fields:
-
-- `active`: preset name to use at startup
-- `active_args`: optional positional arguments for the active preset
-- `gap_x`, `gap_y`: spacing between grid cells or scroll rows
-- `show_border`: show or hide page borders
-- `padding`: content padding inside page frames
-- `presets`: named layouts available to `:layout`
-
-Default presets:
 
 ```toml
 [layout]
@@ -66,94 +52,121 @@ show_border = false
 padding = 0
 ```
 
-Supported preset fields:
+| Field | Meaning |
+| --- | --- |
+| `active` | Preset used at startup |
+| `active_args` | Arguments for the active preset, in the order of its `params` |
+| `gap_x`, `gap_y` | Cells between page columns and between page rows |
+| `show_border` | Draw a border around each grid page |
+| `padding` | Cells between a grid page and its border |
+| `presets` | Named layouts for `:layout` and the command line |
 
-- `strategy`: `scroll` or `grid`
-- `params`: positional parameter names accepted by `:layout`
-- `columns`: page columns
-- `rows`: grid rows
-- `scroll_divisor`: scroll slice divisor
-- `gap_x`, `gap_y`: optional preset-specific spacing overrides
-- `show_border`: optional preset-specific border override
-- `padding`: optional preset-specific padding override
+Preset fields:
 
-Running `:layout` updates `active` and `active_args` in this file. Running
-`:layout-use` changes only the current session.
+| Field | Meaning |
+| --- | --- |
+| `strategy` | `scroll` (or `continuous`) or `grid` (or `fixed_grid`) |
+| `params` | Names of the arguments `:layout <preset>` accepts, in order |
+| `columns` | Page columns |
+| `rows` | Page rows (grid only) |
+| `scroll_divisor` | Slices per screen height (scroll only) |
+| `gap_x`, `gap_y`, `show_border`, `padding` | Optional overrides of the shared values |
+
+Parameter names that can appear in `params`: `columns` (`column`, `cols`),
+`rows` (`row`), `scroll_divisor` (`divisor`, `step`, `chunk`), `gap_x`,
+`gap_y`, `show_border` (`border`), and `padding` (`pad`). Counts must be between 1 and 64; larger
+values in the file are clamped. Booleans accept `true`/`false`, `yes`/`no`,
+`on`/`off`, and `1`/`0`. A preset with `params = ["rows", "columns"]` also
+accepts `2x3` as a single argument.
+
+Add presets under `[layout.presets.<name>]`; `scroll` and `grid` are restored
+if removed. `:layout` updates `active` and `active_args`; `:layout-use` and
+the layout given on the command line change only the current session.
 
 ## `[render]`
 
-Render fields:
+PDF rasterization:
 
-- `pdfinfo_bin`: `pdfinfo` executable
-- `pdf_raster_backend`: PDF raster backend, `pdfium`, `mutool`, or `poppler`
-- `pdf_raster_batch_pages`: maximum consecutive pages rendered by one raster batch
-- `pdftoppm_bin`: `pdftoppm` executable for the Poppler backend
-- `mutool_bin`: `mutool` executable for the Mutool backend
-- `mutool_band_height`: band height passed to `mutool draw -B`
-- `mutool_threads`: thread count passed to `mutool draw -T`
-- `mutool_parallel`: enable `mutool draw -P`
-- `pdfium_library_path`: optional path to `libpdfium` or its containing directory; if unset, `PDF_TUI_PDFIUM_LIBRARY_PATH`, packaged libraries, and the system library path are tried
-- `pdftk_bin`: `pdftk` executable, used for reading and writing PDF bookmarks
-- `pdftotext_bin`: `pdftotext` executable, used for embedded text search
-- `page_dpi`: base PDF rasterization DPI
-- `chafa_bin`: Chafa executable
-- `auto_detect`: detect terminal graphics support
-- `chafa_args`: extra Chafa fallback arguments
-- `raw_memory_cache_max_bytes`: L1 raw rendered terminal stream memory limit
-- `compressed_memory_cache_max_bytes`: L2 compressed rendered terminal stream memory limit
-- `prepared_memory_cache_max_bytes`: prepared native image memory limit
-- `search_highlight_cache_max_bytes`: search preview highlight PNG cache limit
-- `selection_cache_max_bytes`: selection marker and crop PNG cache limit
-- `selection_image_max_pixels`: maximum pixel count for PNGs copied with `Y`
-- `search_preload_idle_ms`: delay after search text input before preloading search previews
-- `memory_compression`: keep cold rendered terminal streams compressed in memory
-- `cache_max_bytes`: L3 disk cache size limit for page PNGs, text indexes, and terminal streams
-- `cache_compression_level`: L3 zstd compression level
-- `cache_compression_threads`: L3 zstd compression threads
-- `max_concurrent`: maximum concurrent page/render tasks
-- `chafa_threads`: Chafa threads per process
-- `preload_ahead`, `preload_behind`: outer page PNG preload window around the visible region
-- `preload_slice_ahead`, `preload_slice_behind`: nearer scroll-slice PNG preload window
-- `preload_terminal_ahead`, `preload_terminal_behind`: nearest terminal stream preload window
-- `passthrough`: terminal multiplexer passthrough override
-- `zellij_sixel`: `off`, `auto`, or `on`
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `pdf_raster_backend` | `"pdfium"` | `pdfium`, `mutool`, or `poppler` |
+| `pdf_raster_batch_pages` | `4` | Consecutive pages rasterized by one backend run |
+| `pdfium_library_path` | unset | Path to the Pdfium library or its directory; see [Rendering](rendering.md#raster-backends) |
+| `pdfinfo_bin` | `"pdfinfo"` | Reads the page count and page sizes |
+| `pdftoppm_bin` | `"pdftoppm"` | Poppler backend |
+| `mutool_bin` | `"mutool"` | Mutool backend |
+| `mutool_band_height` | `256` | `mutool draw -B` |
+| `mutool_threads` | `8` | `mutool draw -T` |
+| `mutool_parallel` | `true` | `mutool draw -P` |
+| `pdftotext_bin` | `"pdftotext"` | Builds the search index |
+| `pdftk_bin` | `"pdftk"` | Reads and writes bookmarks |
+| `page_dpi` | `180` | Part of the page cache key only: pages are rasterized at the pixel size of their terminal area |
 
-`auto_detect` uses `img-tui` terminal probing to choose Kitty, Sixel, iTerm2,
-Chafa symbols, or ASCII fallback.
+`exiftool` is always run as `exiftool` from `PATH`.
+
+Terminal rendering:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `auto_detect` | `true` | Detect graphics protocols, color depth, and multiplexers. When `false`, only Chafa symbols and ASCII are used |
+| `chafa_bin` | `"chafa"` | Chafa executable |
+| `chafa_args` | `["--format=symbols", "--colors=full", "--symbols=block", "--animate=off", "--polite=on"]` | Extra Chafa arguments. With `auto_detect`, `--colors` and `--symbols` follow the terminal; `--format`, `--probe`, `--relative`, and `--passthrough` are always set by `pdf-tui`, and `--scale=max` is added unless given |
+| `chafa_threads` | `1` | `chafa --threads`; `0` lets Chafa decide |
+| `zellij_sixel` | `"off"` | Sixel under Zellij: `off`, `auto` (when the terminal answers the probe), or `on` |
+| `passthrough` | unset | Ignored; multiplexer passthrough is detected automatically |
+
+Scheduling and preloading:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `max_concurrent` | `4` | Concurrent jobs per stage (rasterizing, terminal rendering). One is kept for visible pages, so `1` disables preloading |
+| `preload_ahead`, `preload_behind` | `4`, `2` | Page PNGs prepared around the view: scroll rows, grid pages, or bookmark, search, and selection entries |
+| `preload_slice_ahead`, `preload_slice_behind` | `3`, `1` | Scroll rows whose slice PNGs are prepared |
+| `preload_terminal_ahead`, `preload_terminal_behind` | `2`, `1` | Entries also rendered for the terminal |
+| `search_preload_idle_ms` | `500` | Pause after typing a query before search previews are preloaded |
+
+Caches (sizes in bytes):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `cache_max_bytes` | `536870912` (512 MiB) | Disk limit for the whole cache, enforced at startup; `0` disables it |
+| `cache_compression_level` | `3` | zstd level of cached terminal renders |
+| `cache_compression_threads` | `2` | zstd threads; `0` compresses on one thread |
+| `raw_memory_cache_max_bytes` | `33554432` (32 MiB) | Terminal renders kept in memory |
+| `memory_compression` | `true` | Compress older protocol renders in memory instead of dropping them |
+| `compressed_memory_cache_max_bytes` | `134217728` (128 MiB) | Compressed renders kept in memory |
+| `prepared_memory_cache_max_bytes` | `134217728` (128 MiB) | Decoded images kept for protocol rendering |
+| `search_highlight_cache_max_bytes` | `67108864` (64 MiB) | Disk limit for search highlight PNGs |
+| `selection_cache_max_bytes` | `67108864` (64 MiB) | Disk limit for selection crop and marker PNGs |
+| `selection_image_max_pixels` | `4194304` | Largest PNG copied with `Y`, in pixels |
+
+See [Cache And Logs](cache-and-logs.md) for what each cache holds.
 
 ## `[behavior]`
 
-Behavior fields:
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `frame_sync_navigation_viewer` | `true` | Ignore viewer navigation until the current frame has rendered |
+| `frame_sync_navigation_bookmarks` | `false` | The same for bookmark navigation and its preview |
+| `frame_sync_navigation_search` | `false` | The same for search results and their preview |
+| `auto_refresh` | `false` | Reload the PDF when the file changes |
+| `auto_refresh_poll_ms` | `500` | How often the file is checked (at least 200) |
+| `auto_refresh_min_interval_ms` | `1500` | Minimum time between automatic reloads (at least 500) |
+| `remember_reading_position` | `false` | Reopen each document where it was last closed |
+| `bookmarks_left_ratio`, `bookmarks_right_ratio` | `2`, `1` | Width ratio of the bookmark tree and preview panels |
+| `search_left_ratio`, `search_right_ratio` | `2`, `1` | Width ratio of the search result and preview panels |
+| `scroll_lines` | `4` | Unused; kept for compatibility |
 
-- `scroll_lines`: retained for keyboard scroll compatibility
-- `frame_sync_navigation_viewer`: wait for viewer pages to finish rendering before accepting another browse action
-- `frame_sync_navigation_bookmarks`: wait for bookmark previews to finish rendering before accepting another bookmark browse action
-- `frame_sync_navigation_search`: wait for search previews to finish rendering before accepting another search browse action
-- `auto_refresh`: enable a background watcher for the opened PDF
-- `auto_refresh_poll_ms`: file change polling interval
-- `auto_refresh_min_interval_ms`: minimum interval between automatic refresh requests
-- `remember_reading_position`: reopen documents at the position where they were last closed
-- `bookmarks_left_ratio`: left bookmarks panel ratio
-- `bookmarks_right_ratio`: right preview panel ratio
-- `search_left_ratio`: left search panel ratio
-- `search_right_ratio`: right preview panel ratio
+Frame-synced navigation keeps fast key repeat from skipping past pages that
+never finished drawing; turn it off for free-running navigation.
 
-Automatic refresh is disabled by default. When enabled, `pdf-tui` watches the
-opened PDF file signature and requests a refresh after updates. Repeated updates
-are rate limited by `auto_refresh_min_interval_ms`.
+With `auto_refresh`, a change to the file (size or modification time) is
+noticed within one poll interval and triggers a reload, at most once per
+`auto_refresh_min_interval_ms`; the reading position is kept.
 
-Frame-synced navigation is configured per view. Defaults are
-`frame_sync_navigation_viewer = true`,
-`frame_sync_navigation_bookmarks = false`, and
-`frame_sync_navigation_search = false`. Set a view's switch to `false` for
-free-running navigation in that view.
-
-The default bookmarks and search panel ratio is `2:1`.
-
-`remember_reading_position` is disabled by default. When enabled, the last
-reading position of each document is saved in `progress.toml` inside the cache
-directory on exit and restored on the next open. Positions are keyed by path,
-file size, and modification time, so editing a PDF forgets its stale position
-instead of restoring one that no longer matches. `--progress` on the command
-line still takes precedence, and `clear-cache` keeps the remembered positions
-intact.
+`remember_reading_position` stores positions in `progress.toml` in the cache
+directory when `pdf-tui` exits, keyed by the file's path, size, and
+modification time: a PDF changed by another program opens at the start, while
+changes seen during the session (refresh, metadata or bookmark edits) are
+remembered. `--progress` takes precedence, and `:clear-cache` keeps the
+positions. The 100 most recently closed documents are kept.

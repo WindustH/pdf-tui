@@ -1,110 +1,46 @@
-use img_tui::ProtocolOverlay;
 use ratatui::{Frame, layout::Rect};
-use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{app::App, event::AsyncEvent, layout, pdf::PageStore, render::RenderStore};
+use crate::app::App;
 
-use super::{page::draw_slice, preload};
+use super::{DrawCtx, page::draw_slice, preload};
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn draw_scroll(
-  frame: &mut Frame,
-  app: &mut App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
-) {
-  let scroll_layout = layout::compute_scroll_layout(
-    app.document.page_count,
-    area.width,
-    area.height,
-    &app.layout,
-    |index| app.page_dimensions(index),
-    app.terminal_cell_pixels,
-  );
-  app.update_scroll_layout(scroll_layout.clone(), area);
+pub(super) fn draw_scroll(frame: &mut Frame, app: &mut App, ctx: &mut DrawCtx<'_>, area: Rect) {
+  app.prepare_scroll_layout(area);
+  let all_ready = draw_visible_slices(frame, app, ctx, area);
+  app.finish_frame_render_pass(all_ready);
+}
 
-  let visible_rows = layout::visible_scroll_rows(
-    &scroll_layout,
-    app.scroll as usize,
-    area.height,
-    app.layout.scroll_divisor,
-  );
-  let used_height = layout::visible_rows_height(&scroll_layout, &visible_rows);
-  let mut row_y = area
-    .y
-    .saturating_add(area.height.saturating_sub(used_height) / 2);
-  let mut visible_summary = Vec::new();
+fn draw_visible_slices(frame: &mut Frame, app: &App, ctx: &mut DrawCtx<'_>, area: Rect) -> bool {
+  let Some(scroll_layout) = app.scroll_layout() else {
+    return true;
+  };
+  let divisor = app.layout.scroll_divisor;
   let mut all_ready = true;
-  for (row_position, row_index) in visible_rows.iter().copied().enumerate() {
-    let Some(row) = scroll_layout.rows.get(row_index) else {
-      continue;
-    };
-    for item_index in &row.items {
-      let Some(item) = scroll_layout.items.get(*item_index).copied() else {
-        continue;
-      };
-      // Top-align slices within the row: under the shared slicing grid a
-      // shorter slice is always a page's remainder (its last slice), so
-      // centering it would open a blank seam between it and the previous
-      // slice instead of leaving the slack at the page end.
-      let item_area = Rect::new(
-        area.x.saturating_add(item.x),
-        row_y,
-        item.width.min(area.width.saturating_sub(item.x)),
-        item.height,
-      );
-      let ready = draw_slice(
-        frame,
-        app,
-        pages,
-        renderer,
-        tx,
-        item,
-        item_area,
-        area,
-        obscured_areas,
-        overlays,
-        frame_message,
-        preserve_overlays,
-        preserve_areas,
-        drawn_render_keys,
-      );
-      all_ready &= ready;
+  let mut visible_summary = Vec::new();
+  for placed in scroll_layout.placed_items(app.scroll as usize, area, divisor) {
+    let ready = draw_slice(frame, app, ctx, placed.item, placed.area, area);
+    all_ready &= ready;
+    if tracing::enabled!(tracing::Level::DEBUG) {
       visible_summary.push(format!(
-        "p{} s{}/{} row={} y={} h={} ready={}",
-        item.page_index + 1,
-        item.slice_index + 1,
-        item.slice_count,
-        row_index,
-        item_area.y,
-        item_area.height,
-        ready
+        "p{} s{}/{} row={} y={} h={} ready={ready}",
+        placed.item.page_index + 1,
+        placed.item.slice_index + 1,
+        placed.item.slice_count,
+        placed.item.row_index,
+        placed.area.y,
+        placed.area.height,
       ));
     }
-    row_y = row_y.saturating_add(row.height);
-    if row_position + 1 < visible_rows.len() {
-      row_y = row_y.saturating_add(row.gap_after);
-    }
   }
+  let visible_rows = scroll_layout.visible_rows(app.scroll as usize, area.height, divisor);
   preload::preload_scroll_neighbors(
     app,
-    pages,
-    renderer,
-    tx,
+    &mut ctx.preload(),
     area,
-    &scroll_layout,
-    &visible_rows,
+    scroll_layout,
+    visible_rows.clone(),
   );
-  app.finish_frame_render_pass(all_ready);
   debug!(
     scroll = app.scroll,
     focused_page = app.focused_page + 1,
@@ -112,10 +48,11 @@ pub(super) fn draw_scroll(
     viewport_height = area.height,
     total_height = scroll_layout.total_height,
     rows = scroll_layout.rows.len(),
-    visible_rows = ?visible_rows,
+    ?visible_rows,
     visible = ?visible_summary,
-    preserve_overlays = *preserve_overlays,
+    preserve_overlays = ctx.images.preserve_overlays,
     all_ready,
     "scroll draw"
   );
+  all_ready
 }

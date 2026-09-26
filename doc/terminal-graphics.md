@@ -1,51 +1,50 @@
 # Terminal Graphics
 
-`pdf-tui` uses `img-tui` to detect terminal graphics support and choose a
-render mode order.
+`pdf-tui` draws pages with the best method the terminal supports, trying them
+in this order:
 
-Native image protocols:
+1. Kitty graphics protocol
+2. Sixel
+3. iTerm2 inline images
+4. Chafa symbols (colored block characters)
+5. ASCII (Chafa without color)
 
-- Kitty graphics protocol
-- Sixel
-- iTerm2 inline images
+With `render.auto_detect = true` (the default), `pdf-tui` probes the terminal
+at startup and uses the protocols it confirms. With `auto_detect = false`,
+only Chafa symbols and ASCII are used. If a method fails for a page, the next
+one is tried.
 
-Fallback modes:
+## Choosing Modes
 
-- Chafa symbols
-- ASCII symbols
-
-## Override Render Modes
-
-The render mode order can be overridden with the shared `img-tui` environment
-variable:
+The `GALLERY_TUI_RENDER_MODES` environment variable overrides the detected
+order with a comma-separated list:
 
 ```sh
 GALLERY_TUI_RENDER_MODES=kitty,sixel,symbols pdf-tui file.pdf
 GALLERY_TUI_RENDER_MODES=symbols pdf-tui file.pdf
 ```
 
-The environment variable name is shared with `gallery-tui` because it comes
-from `img-tui`.
+Accepted names are `kitty`, `sixel`, `iterm` (or `iterm2`), `symbols`, and
+`ascii`; `off` means `symbols,ascii`, and `auto` keeps detection. The variable
+is shared with `gallery-tui` because both use the `img-tui` library.
 
 ## Multiplexers
 
-`img-tui` detects tmux and screen passthrough and configures protocol wrapping
-for Chafa and native image protocols.
+Inside tmux and GNU screen, protocol output is wrapped for passthrough
+automatically.
 
-For [Zellij 0.45 and newer](https://zellij.dev/documentation/compatibility.html),
-`img-tui` actively queries KGP support and selects Kitty when both Zellij and
-the attached host terminal confirm it. Outer-terminal environment variables
-are not treated as proof, so an unsupported host or
-`support_kitty_graphics_protocol false` still falls back safely. Zellij does
-not currently support Kitty Unicode placeholders, so pdf-tui uses regular
-Kitty placements in this environment.
+Under [Zellij 0.45 and newer](https://zellij.dev/documentation/compatibility.html),
+Kitty graphics are used only when Zellij and the host terminal both confirm
+support when queried; environment variables of the outer terminal are not
+trusted, so an unsupported host, or `support_kitty_graphics_protocol false`,
+falls back safely. Zellij does not support Kitty Unicode placeholders, so
+regular Kitty placements are used there.
 
-Sixel remains disabled by default under Zellij unless
-`render.zellij_sixel` is set to `auto` or `on`. This option controls Sixel only
-and does not disable the automatically detected Kitty path.
+Sixel stays off under Zellij unless `render.zellij_sixel` is `auto` (use it
+when the probe confirms Sixel) or `on`. This setting does not affect Kitty.
 
 ## Kitty Placeholders
 
-`pdf-tui` uses `img-tui` terminal capability detection for Kitty unicode
-placeholder support. This keeps placement and erase behavior aligned with
-`gallery-tui`.
+Where the terminal supports Kitty Unicode placeholders, images are placed
+through placeholder characters in the text grid, so dialogs and popups
+cleanly cover parts of a page image.

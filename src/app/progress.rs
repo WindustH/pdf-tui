@@ -3,22 +3,11 @@ use crate::layout::ScrollLayout;
 use super::App;
 
 impl App {
-  pub fn set_user_progress_target(&mut self, progress: f64) {
-    self.set_progress_target(progress);
-  }
-
-  /// Restores a position previously saved for this document. Behaves
-  /// like the explicit `--progress` override, just sourced from the
-  /// progress store instead of the command line.
-  pub fn set_document_progress_target(&mut self, progress: f64) {
-    self.set_progress_target(progress);
-  }
-
   /// Position to persist on exit, or `None` for empty documents where
   /// there is nothing worth remembering.
   pub fn save_progress_on_exit(&self) -> Option<f64> {
     (self.document.page_count > 0)
-      .then(|| self.current_progress())
+      .then(|| self.current_progress().or(self.pending_progress))
       .flatten()
   }
 
@@ -27,12 +16,12 @@ impl App {
       return Some(0.0);
     }
     if self.layout.is_scroll() {
-      let layout = self.last_scroll_layout.as_ref()?;
+      let cached = self.scroll_layout.as_ref()?;
       return progress_for_scroll_row(
-        layout,
+        cached.layout(),
         self.scroll as usize,
-        self.viewport_height,
-        self.layout.scroll_divisor,
+        cached.viewport_height(),
+        cached.scroll_divisor(),
       );
     }
     progress_for_grid_start(
@@ -42,7 +31,9 @@ impl App {
     )
   }
 
-  pub(super) fn set_progress_target(&mut self, progress: f64) {
+  /// Moves to a 0-based reading progress; applied once the layout for the
+  /// current viewport exists if it does not yet.
+  pub fn set_progress_target(&mut self, progress: f64) {
     let progress = self.clamp_progress(progress);
     if self.apply_progress_to_current_layout(progress) {
       self.pending_progress = None;
@@ -68,13 +59,13 @@ impl App {
       return true;
     }
     if self.layout.is_scroll() {
-      let Some(layout) = &self.last_scroll_layout else {
+      let Some(cached) = &self.scroll_layout else {
         return false;
       };
       self.scroll = best_scroll_row_for_progress(
-        layout,
-        self.viewport_height,
-        self.layout.scroll_divisor,
+        cached.layout(),
+        cached.viewport_height(),
+        cached.scroll_divisor(),
         progress,
       ) as u32;
       self.update_focus_from_scroll();
@@ -127,22 +118,36 @@ fn best_scroll_row_for_progress(
   if layout.rows.is_empty() {
     return 0;
   }
-  let mut best_row = 0;
+  let max_row = layout.max_scroll_row(viewport_height, scroll_divisor);
+  closest_candidate(0..=max_row, target, |row_index| {
+    progress_for_scroll_row(layout, row_index, viewport_height, scroll_divisor)
+  })
+  .unwrap_or(0)
+}
+
+/// The candidate whose progress is closest to `target`. Ties go to the
+/// later candidate, so an integer target such as a page start (`4.0`, the
+/// boundary between the fourth and fifth page) lands on the page that
+/// begins there rather than on the one that ends there.
+fn closest_candidate(
+  candidates: impl IntoIterator<Item = usize>,
+  target: f64,
+  progress_of: impl Fn(usize) -> Option<f64>,
+) -> Option<usize> {
+  const EPSILON: f64 = 1e-9;
+  let mut best = None;
   let mut best_distance = f64::INFINITY;
-  let max_row = crate::layout::max_scroll_row_for_viewport(layout, viewport_height, scroll_divisor);
-  for row_index in 0..=max_row {
-    let Some(progress) =
-      progress_for_scroll_row(layout, row_index, viewport_height, scroll_divisor)
-    else {
+  for candidate in candidates {
+    let Some(progress) = progress_of(candidate) else {
       continue;
     };
     let distance = (progress - target).abs();
-    if distance < best_distance {
-      best_row = row_index;
-      best_distance = distance;
+    if distance <= best_distance + EPSILON {
+      best = Some(candidate);
+      best_distance = best_distance.min(distance);
     }
   }
-  best_row
+  best
 }
 
 fn progress_for_scroll_row(
@@ -151,18 +156,10 @@ fn progress_for_scroll_row(
   viewport_height: u16,
   scroll_divisor: u16,
 ) -> Option<f64> {
-  let visible_rows =
-    crate::layout::visible_scroll_rows(layout, row_index, viewport_height, scroll_divisor);
   let mut weighted_sum = 0.0;
   let mut total_weight = 0.0;
-  for row_index in visible_rows {
-    let Some(row) = layout.rows.get(row_index) else {
-      continue;
-    };
-    for item_index in &row.items {
-      let Some(item) = layout.items.get(*item_index) else {
-        continue;
-      };
+  for row_index in layout.visible_rows(row_index, viewport_height, scroll_divisor) {
+    for item in layout.row_items(row_index) {
       let full_width = f64::from(item.full_width.max(1));
       let full_height = f64::from(item.full_height.max(1));
       let (top_cells, height_cells) = crate::layout::grid_slice_span(
@@ -196,19 +193,12 @@ fn best_grid_start_for_progress(
   if page_count == 0 {
     return 0;
   }
-  let mut best_start = 0;
-  let mut best_distance = f64::INFINITY;
-  for start in reachable_grid_starts(page_count, capacity, row_step) {
-    let Some(progress) = progress_for_grid_start(start, capacity, page_count) else {
-      continue;
-    };
-    let distance = (progress - target).abs();
-    if distance < best_distance {
-      best_start = start;
-      best_distance = distance;
-    }
-  }
-  best_start
+  closest_candidate(
+    reachable_grid_starts(page_count, capacity, row_step),
+    target,
+    |start| progress_for_grid_start(start, capacity, page_count),
+  )
+  .unwrap_or(0)
 }
 
 fn reachable_grid_starts(page_count: usize, capacity: usize, row_step: usize) -> Vec<usize> {
@@ -258,6 +248,40 @@ mod tests {
     assert_eq!(best_grid_start_for_progress(0.0, 6, 3, 20), 0);
     assert_eq!(best_grid_start_for_progress(6.0, 6, 3, 20), 3);
     assert_eq!(best_grid_start_for_progress(18.0, 6, 3, 20), 14);
+  }
+
+  #[test]
+  fn page_start_targets_land_on_the_page_that_begins_there() {
+    // Three one-row pages, one row per screen: rows report progress
+    // 0.5 / 1.5 / 2.5, so 1.0 is equally far from rows 0 and 1.
+    let layout = ScrollLayout {
+      items: (0..3)
+        .map(|page_index| ScrollItem {
+          page_index,
+          slice_index: 0,
+          slice_count: 1,
+          grid_height: 10,
+          row_index: page_index,
+          x: 0,
+          y: page_index as u32 * 10,
+          width: 10,
+          height: 10,
+          full_width: 10,
+          full_height: 10,
+        })
+        .collect(),
+      rows: (0..3)
+        .map(|index| ScrollRow {
+          height: 10,
+          gap_after: 0,
+          items: vec![index],
+        })
+        .collect(),
+      total_height: 30,
+    };
+    assert_eq!(best_scroll_row_for_progress(&layout, 10, 1, 1.0), 1);
+    assert_eq!(best_scroll_row_for_progress(&layout, 10, 1, 2.0), 2);
+    assert_eq!(best_grid_start_for_progress(1.0, 1, 1, 3), 1);
   }
 
   #[test]

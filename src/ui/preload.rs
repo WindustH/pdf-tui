@@ -1,132 +1,183 @@
-use std::collections::HashSet;
+//! Warming caches around what is visible: page PNGs farthest out, scroll
+//! slices nearer, and terminal renders for the nearest neighbors.
 
-use ratatui::layout::{Constraint, Direction, Rect};
+use std::{collections::HashSet, ops::Range};
+
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 
 use crate::{
   app::{App, ViewMode},
+  config::RenderConfig,
   event::AsyncEvent,
-  layout,
-  pdf::PageStore,
+  geometry::{fitted_page_area, safe_inner, slot_content_area, split_panels},
+  layout::{self, ScrollItem, ScrollLayout},
+  overlay::{OverlayState, OverlayStep, OverlayStore},
+  pdf::{PageImage, PageSliceSpec, PageStore},
   render::{RenderKind, RenderStore},
   search, selection,
 };
 
-use super::page::{fitted_page_area, page_target_pixels, safe_inner, slice_spec_for_item};
+use super::{
+  ImagePipeline,
+  page::{fitted_page_request, slice_spec_for_item},
+};
 
-pub(super) fn pump_preload(
+pub(super) struct PreloadCtx<'a> {
+  pub(super) pages: &'a mut PageStore,
+  pub(super) overlays: &'a mut OverlayStore,
+  pub(super) renderer: &'a mut RenderStore,
+  pub(super) tx: &'a mpsc::UnboundedSender<AsyncEvent>,
+}
+
+impl PreloadCtx<'_> {
+  fn preload_terminal(&mut self, image: &PageImage, area: Rect) {
+    self
+      .renderer
+      .preload(image, area.width, area.height, RenderKind::Fit, self.tx);
+  }
+}
+
+/// Distances around the visible region for each cache layer, each capped
+/// by the outer page window.
+struct PreloadLimits {
+  ahead: usize,
+  behind: usize,
+  slice_ahead: usize,
+  slice_behind: usize,
+  terminal_ahead: usize,
+  terminal_behind: usize,
+}
+
+impl PreloadLimits {
+  fn new(render: &RenderConfig) -> Self {
+    let ahead = render.preload_ahead;
+    let behind = render.preload_behind;
+    Self {
+      ahead,
+      behind,
+      // Terminal renders need their slice, so the slice window covers it.
+      slice_ahead: render
+        .preload_slice_ahead
+        .max(render.preload_terminal_ahead)
+        .min(ahead),
+      slice_behind: render
+        .preload_slice_behind
+        .max(render.preload_terminal_behind)
+        .min(behind),
+      terminal_ahead: render.preload_terminal_ahead.min(ahead),
+      terminal_behind: render.preload_terminal_behind.min(behind),
+    }
+  }
+
+  /// Indices of a list within the preload window around `selected`, each
+  /// with whether it is close enough for a terminal render.
+  fn list_window(&self, selected: usize, len: usize) -> impl Iterator<Item = (usize, bool)> + '_ {
+    let start = selected.saturating_sub(self.behind);
+    let end = selected
+      .saturating_add(self.ahead)
+      .min(len.saturating_sub(1));
+    (start..=end).filter(move |_| len > 0).map(move |index| {
+      let terminal = if index >= selected {
+        index - selected <= self.terminal_ahead
+      } else {
+        selected - index <= self.terminal_behind
+      };
+      (index, terminal)
+    })
+  }
+}
+
+/// Queues preloads around the current position, e.g. after a page render
+/// finished; drawing a frame queues them as well.
+pub fn pump_preload(
   app: &mut App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
+  pipeline: &mut ImagePipeline,
   tx: &mpsc::UnboundedSender<AsyncEvent>,
 ) {
   let Some(area) = app.viewport else {
     return;
   };
+  let ctx = &mut PreloadCtx {
+    pages: &mut pipeline.pages,
+    overlays: &mut pipeline.overlays,
+    renderer: &mut pipeline.renderer,
+    tx,
+  };
   match app.view {
     ViewMode::Viewer if app.layout.is_scroll() => {
-      let Some(scroll_layout) = app.last_scroll_layout.as_ref() else {
+      let Some(scroll_layout) = app.scroll_layout() else {
         return;
       };
-      let visible_rows = layout::visible_scroll_rows(
-        scroll_layout,
-        app.scroll as usize,
-        area.height,
-        app.layout.scroll_divisor,
-      );
-      preload_scroll_neighbors(app, pages, renderer, tx, area, scroll_layout, &visible_rows);
+      let visible_rows =
+        scroll_layout.visible_rows(app.scroll as usize, area.height, app.layout.scroll_divisor);
+      preload_scroll_neighbors(app, ctx, area, scroll_layout, visible_rows);
     }
     ViewMode::Viewer => {
       let capacity = layout::grid_slots(area, &app.layout).len().max(1);
       let start = app.grid_start_page;
       let end = start.saturating_add(capacity).min(app.document.page_count);
       let visible = (start..end).collect::<Vec<_>>();
-      preload_grid_neighbors(app, pages, renderer, tx, area, &visible);
+      preload_grid_neighbors(app, ctx, area, &visible);
     }
-    ViewMode::Bookmarks => preload_bookmark_previews(app, pages, renderer, tx, area),
-    ViewMode::Search if app.search_preload_ready() => {
-      preload_search_previews(app, pages, renderer, tx, area);
-    }
-    ViewMode::Selection => preload_selection_history(app, renderer, tx, area),
+    ViewMode::Bookmarks => preload_bookmark_previews(app, ctx, area),
+    ViewMode::Search if app.search_preload_ready() => preload_search_previews(app, ctx, area),
+    ViewMode::Selection => preload_selection_history(app, ctx, area),
     ViewMode::Search | ViewMode::Metadata => {}
   }
 }
 
 pub(super) fn preload_scroll_neighbors(
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   area: Rect,
-  scroll_layout: &layout::ScrollLayout,
-  visible_rows: &[usize],
+  scroll_layout: &ScrollLayout,
+  visible_rows: Range<usize>,
 ) {
   if visible_rows.is_empty() {
     return;
   }
-  let first = visible_rows[0];
-  let last = *visible_rows.last().unwrap_or(&first);
-  let ahead = app.settings.config.render.preload_ahead;
-  let behind = app.settings.config.render.preload_behind;
-  let slice_ahead = slice_preload_limit(
-    ahead,
-    app.settings.config.render.preload_slice_ahead,
-    app.settings.config.render.preload_terminal_ahead,
-  );
-  let slice_behind = slice_preload_limit(
-    behind,
-    app.settings.config.render.preload_slice_behind,
-    app.settings.config.render.preload_terminal_behind,
-  );
-  let terminal_ahead =
-    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
-  let terminal_behind =
-    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
-  let ahead_rows = row_range_after(last, ahead, scroll_layout.rows.len());
-  let behind_rows = row_range_before(first, behind);
+  let limits = PreloadLimits::new(&app.settings.config.render);
+  let row_count = scroll_layout.rows.len();
+  let ahead_rows = visible_rows.end..visible_rows.end.saturating_add(limits.ahead).min(row_count);
+  let behind_rows = visible_rows.start.saturating_sub(limits.behind)..visible_rows.start;
+  // One slice job renders every slice of a page group, so queue each group
+  // once even when several of its slices are in the window.
   let mut slice_groups = HashSet::new();
 
-  preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &ahead_rows);
-  preload_scroll_next_pages(app, pages, tx, area, scroll_layout, visible_rows);
-  {
-    let mut ctx = ScrollPreloadContext {
+  preload_pages_in_rows(app, ctx, area, scroll_layout, ahead_rows.clone());
+  preload_pages_after_rows(app, ctx, area, scroll_layout, visible_rows);
+  for (distance, row_index) in ahead_rows.enumerate() {
+    let layers = (
+      distance < limits.slice_ahead,
+      distance < limits.terminal_ahead,
+    );
+    preload_scroll_row(
       app,
-      pages,
-      renderer,
-      tx,
+      ctx,
       area,
       scroll_layout,
-      slice_groups: &mut slice_groups,
-    };
-    for (distance, index) in ahead_rows.iter().enumerate() {
-      preload_scroll_row(
-        &mut ctx,
-        *index,
-        distance < slice_ahead,
-        distance < terminal_ahead,
-      );
-    }
+      row_index,
+      layers,
+      &mut slice_groups,
+    );
   }
 
-  preload_scroll_page_batches(app, pages, tx, area, scroll_layout, &behind_rows);
-  {
-    let mut ctx = ScrollPreloadContext {
+  preload_pages_in_rows(app, ctx, area, scroll_layout, behind_rows.clone().rev());
+  for (distance, row_index) in behind_rows.rev().enumerate() {
+    let layers = (
+      distance < limits.slice_behind,
+      distance < limits.terminal_behind,
+    );
+    preload_scroll_row(
       app,
-      pages,
-      renderer,
-      tx,
+      ctx,
       area,
       scroll_layout,
-      slice_groups: &mut slice_groups,
-    };
-    for (distance, index) in behind_rows.iter().enumerate() {
-      preload_scroll_row(
-        &mut ctx,
-        *index,
-        distance < slice_behind,
-        distance < terminal_behind,
-      );
-    }
+      row_index,
+      layers,
+      &mut slice_groups,
+    );
   }
 }
 
@@ -141,7 +192,7 @@ struct SlicePreloadGroup {
 }
 
 impl SlicePreloadGroup {
-  fn from_spec(spec: crate::pdf::PageSliceSpec) -> Self {
+  fn from_spec(spec: PageSliceSpec) -> Self {
     Self {
       page_index: spec.page_index,
       slice_count: spec.slice_count,
@@ -153,148 +204,80 @@ impl SlicePreloadGroup {
   }
 }
 
-fn row_range_after(last: usize, ahead: usize, row_count: usize) -> Vec<usize> {
-  if row_count == 0 {
-    return Vec::new();
-  }
-  let start = last.saturating_add(1);
-  if start >= row_count {
-    return Vec::new();
-  }
-  let end = last.saturating_add(ahead).min(row_count.saturating_sub(1));
-  (start..=end).collect()
-}
-
-fn row_range_before(first: usize, behind: usize) -> Vec<usize> {
-  (first.saturating_sub(behind)..first).rev().collect()
-}
-
-fn layer_preload_limit(outer: usize, configured: usize) -> usize {
-  configured.min(outer)
-}
-
-fn slice_preload_limit(outer: usize, configured: usize, terminal: usize) -> usize {
-  configured.max(terminal).min(outer)
-}
-
-fn preload_scroll_page_batches(
+/// Queues the full-page PNG of every page appearing in `rows`, in order.
+fn preload_pages_in_rows(
   app: &App,
-  pages: &mut PageStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   area: Rect,
-  scroll_layout: &layout::ScrollLayout,
-  row_indices: &[usize],
+  scroll_layout: &ScrollLayout,
+  rows: impl Iterator<Item = usize>,
 ) {
   let mut seen = HashSet::new();
-  for row_index in row_indices {
-    let Some(row) = scroll_layout.rows.get(*row_index) else {
-      continue;
-    };
-    for item_index in &row.items {
-      let Some(item) = scroll_layout.items.get(*item_index).copied() else {
-        continue;
-      };
+  for row_index in rows {
+    for item in scroll_layout.row_items(row_index) {
       if seen.insert(item.page_index) {
-        preload_scroll_page(app, pages, tx, area, item);
+        preload_scroll_page(app, ctx, area, *item);
       }
     }
   }
 }
 
-fn preload_scroll_next_pages(
+/// Queues the pages right after the last visible one, one raster batch
+/// deep, so batched backends render them together.
+fn preload_pages_after_rows(
   app: &App,
-  pages: &mut PageStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   area: Rect,
-  scroll_layout: &layout::ScrollLayout,
-  visible_rows: &[usize],
+  scroll_layout: &ScrollLayout,
+  rows: Range<usize>,
 ) {
-  let Some(last_visible_page) = max_page_in_rows(scroll_layout, visible_rows) else {
+  let Some(last_visible_page) = rows
+    .flat_map(|row_index| scroll_layout.row_items(row_index))
+    .map(|item| item.page_index)
+    .max()
+  else {
     return;
   };
-  let pages_ahead = app.document.pdf_raster_batch_pages.max(1);
   let end = last_visible_page
-    .saturating_add(pages_ahead)
+    .saturating_add(app.document.pdf_raster_batch_pages.max(1))
     .min(app.document.page_count.saturating_sub(1));
   for page_index in last_visible_page.saturating_add(1)..=end {
-    let Some(item) = first_scroll_item_for_page(scroll_layout, page_index) else {
-      continue;
-    };
-    preload_scroll_page(app, pages, tx, area, item);
+    if let Some(item) = scroll_layout.first_item_of_page(page_index) {
+      preload_scroll_page(app, ctx, area, *item);
+    }
   }
 }
 
-fn max_page_in_rows(scroll_layout: &layout::ScrollLayout, row_indices: &[usize]) -> Option<usize> {
-  row_indices
-    .iter()
-    .filter_map(|row_index| scroll_layout.rows.get(*row_index))
-    .flat_map(|row| row.items.iter())
-    .filter_map(|item_index| scroll_layout.items.get(*item_index))
-    .map(|item| item.page_index)
-    .max()
-}
-
-fn first_scroll_item_for_page(
-  scroll_layout: &layout::ScrollLayout,
-  page_index: usize,
-) -> Option<layout::ScrollItem> {
-  scroll_layout
-    .items
-    .iter()
-    .copied()
-    .find(|item| item.page_index == page_index)
-}
-
-fn preload_scroll_page(
-  app: &App,
-  pages: &mut PageStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  item: layout::ScrollItem,
-) {
+fn preload_scroll_page(app: &App, ctx: &mut PreloadCtx<'_>, area: Rect, item: ScrollItem) {
   let spec = slice_spec_for_item(app, item, area);
-  pages.preload(spec.page_index, spec.target_width, spec.target_height, tx);
-}
-
-struct ScrollPreloadContext<'a> {
-  app: &'a App,
-  pages: &'a mut PageStore,
-  renderer: &'a mut RenderStore,
-  tx: &'a mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-  scroll_layout: &'a layout::ScrollLayout,
-  slice_groups: &'a mut HashSet<SlicePreloadGroup>,
+  ctx.pages.preload(
+    spec.page_index,
+    spec.target_width,
+    spec.target_height,
+    ctx.tx,
+  );
 }
 
 fn preload_scroll_row(
-  ctx: &mut ScrollPreloadContext<'_>,
+  app: &App,
+  ctx: &mut PreloadCtx<'_>,
+  area: Rect,
+  scroll_layout: &ScrollLayout,
   row_index: usize,
-  preload_slice: bool,
-  preload_terminal: bool,
+  (preload_slice, preload_terminal): (bool, bool),
+  slice_groups: &mut HashSet<SlicePreloadGroup>,
 ) {
-  let Some(row) = ctx.scroll_layout.rows.get(row_index) else {
-    return;
-  };
-  for item_index in &row.items {
-    let Some(item) = ctx.scroll_layout.items.get(*item_index).copied() else {
-      continue;
-    };
-    let spec = slice_spec_for_item(ctx.app, item, ctx.area);
-    let slice_ready = ctx.app.slices.contains_key(&spec);
-    let page_ready = ctx
-      .app
-      .pages
-      .get(spec.page_index)
-      .and_then(|page| page.as_ref())
-      .is_some();
+  for item in scroll_layout.row_items(row_index) {
+    let spec = slice_spec_for_item(app, *item, area);
+    let slice = app.slice_image(&spec);
     if preload_slice
-      && page_ready
-      && !slice_ready
-      && ctx.slice_groups.insert(SlicePreloadGroup::from_spec(spec))
+      && slice.is_none()
+      && app.page_image(spec.page_index).is_some()
+      && slice_groups.insert(SlicePreloadGroup::from_spec(spec))
     {
       ctx.pages.preload_slice(spec, ctx.tx);
     }
-    if preload_terminal && let Some(slice) = ctx.app.slices.get(&spec) {
+    if preload_terminal && let Some(slice) = slice {
       ctx
         .renderer
         .preload(slice, item.width, item.height, RenderKind::Fit, ctx.tx);
@@ -304,297 +287,161 @@ fn preload_scroll_row(
 
 pub(super) fn preload_grid_neighbors(
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   area: Rect,
   visible: &[usize],
 ) {
-  if visible.is_empty() {
-    return;
-  }
-  let first = visible[0];
-  let last = *visible.last().unwrap_or(&first);
-  let ahead = app.settings.config.render.preload_ahead;
-  let behind = app.settings.config.render.preload_behind;
-  let terminal_ahead =
-    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
-  let terminal_behind =
-    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
-  let slots = layout::grid_slots(area, &app.layout);
-  let Some(slot) = slots.first().copied() else {
+  let (Some(&first), Some(&last)) = (visible.first(), visible.last()) else {
     return;
   };
-  let page_area = if app.layout.show_border {
-    safe_inner(
-      slot,
-      app.layout.padding.saturating_add(1),
-      app.layout.padding.saturating_add(1),
-    )
-  } else {
-    safe_inner(slot, app.layout.padding, app.layout.padding)
+  let limits = PreloadLimits::new(&app.settings.config.render);
+  let Some(slot) = layout::grid_slots(area, &app.layout).first().copied() else {
+    return;
   };
+  let page_area = slot_content_area(slot, &app.layout);
   if page_area.width == 0 || page_area.height == 0 {
     return;
   }
-
-  for (distance, index) in (last.saturating_add(1)..=last.saturating_add(ahead)).enumerate() {
-    if index >= app.document.page_count {
-      break;
-    }
-    preload_grid_page(
-      app,
-      pages,
-      renderer,
-      tx,
-      index,
-      page_area,
-      distance < terminal_ahead,
-    );
+  let ahead = (last + 1..=last.saturating_add(limits.ahead))
+    .take_while(|index| *index < app.document.page_count);
+  for (distance, index) in ahead.enumerate() {
+    preload_fitted_page(app, ctx, index, page_area, distance < limits.terminal_ahead);
   }
-  for (distance, index) in (first.saturating_sub(behind)..first).rev().enumerate() {
-    preload_grid_page(
+  for (distance, index) in (first.saturating_sub(limits.behind)..first)
+    .rev()
+    .enumerate()
+  {
+    preload_fitted_page(
       app,
-      pages,
-      renderer,
-      tx,
+      ctx,
       index,
       page_area,
-      distance < terminal_behind,
+      distance < limits.terminal_behind,
     );
   }
 }
 
-fn preload_grid_page(
-  app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  index: usize,
-  page_area: Rect,
-  preload_terminal: bool,
-) {
-  let image_area = fitted_page_area(
-    page_area,
-    app.terminal_cell_pixels,
-    app.page_dimensions(index),
-  );
-  if image_area.width == 0 || image_area.height == 0 {
-    return;
-  }
-  let (target_width, target_height) = page_target_pixels(
-    image_area.width,
-    image_area.height,
-    app.terminal_cell_pixels,
-    app.page_dimensions(index),
-  );
-  pages.preload(index, target_width, target_height, tx);
-  if preload_terminal && let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) {
-    renderer.preload(
-      page,
-      image_area.width,
-      image_area.height,
-      RenderKind::Fit,
-      tx,
-    );
-  }
-}
-
-pub(super) fn preload_bookmark_previews(
-  app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-) {
-  let Some(inner) = preview_inner(area, app.bookmarks_left_ratio, app.bookmarks_right_ratio) else {
+pub(super) fn preload_bookmark_previews(app: &App, ctx: &mut PreloadCtx<'_>, area: Rect) {
+  let preview = preview_area(area, app.bookmarks.left_ratio, app.bookmarks.right_ratio);
+  let Some(selected) = app.bookmarks.selected else {
     return;
   };
-  let Some(selected) = app.bookmarks_selected else {
-    return;
-  };
-  let visible = app.visible_bookmark_indices();
+  let visible = app.bookmarks.visible_indices();
   let Some(selected_pos) = visible.iter().position(|index| *index == selected) else {
     return;
   };
-  let ahead = app.settings.config.render.preload_ahead;
-  let behind = app.settings.config.render.preload_behind;
-  let terminal_ahead =
-    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
-  let terminal_behind =
-    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
-  let start = selected_pos.saturating_sub(behind);
-  let end = selected_pos
-    .saturating_add(ahead)
-    .min(visible.len().saturating_sub(1));
+  let limits = PreloadLimits::new(&app.settings.config.render);
   let mut seen_pages = HashSet::new();
-  for pos in start..=end {
-    let Some(bookmark) = visible.get(pos).and_then(|index| app.bookmarks.get(*index)) else {
+  for (pos, preload_terminal) in limits.list_window(selected_pos, visible.len()) {
+    let Some(bookmark) = visible
+      .get(pos)
+      .and_then(|index| app.bookmarks.entries.get(*index))
+    else {
       continue;
     };
     let page_index = bookmark
       .page_index
       .min(app.document.page_count.saturating_sub(1));
-    if !seen_pages.insert(page_index) {
-      continue;
+    if seen_pages.insert(page_index) {
+      preload_fitted_page(app, ctx, page_index, preview, preload_terminal);
     }
-    let distance = pos.abs_diff(selected_pos);
-    let preload_terminal = if pos >= selected_pos {
-      distance <= terminal_ahead
-    } else {
-      distance <= terminal_behind
-    };
-    preload_page_preview(
-      app,
-      pages,
-      renderer,
-      tx,
-      page_index,
-      inner,
-      preload_terminal,
-    );
   }
 }
 
-pub(super) fn preload_search_previews(
-  app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-) {
-  let query = app.search_prompt.buffer().input.trim();
-  if query.is_empty() || app.search_results.is_empty() {
+pub(super) fn preload_search_previews(app: &App, ctx: &mut PreloadCtx<'_>, area: Rect) {
+  let search = &app.search;
+  if search.query().is_empty() || search.results.is_empty() {
     return;
   }
-  let Some(inner) = preview_inner(area, app.search_left_ratio, app.search_right_ratio) else {
+  let preview = preview_area(area, search.left_ratio, search.right_ratio);
+  let Some(selected) = search.selected else {
     return;
   };
-  let Some(selected) = app.search_selected else {
-    return;
-  };
-  let ahead = app.settings.config.render.preload_ahead;
-  let behind = app.settings.config.render.preload_behind;
-  let terminal_ahead =
-    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
-  let terminal_behind =
-    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
-  let start = selected.saturating_sub(behind);
-  let end = selected
-    .saturating_add(ahead)
-    .min(app.search_results.len().saturating_sub(1));
-
-  for index in start..=end {
-    let Some(result) = app.search_results.get(index) else {
-      continue;
-    };
-    let distance = index.abs_diff(selected);
-    let preload_terminal = if index >= selected {
-      distance <= terminal_ahead
-    } else {
-      distance <= terminal_behind
-    };
-    preload_search_preview(app, pages, renderer, tx, result, inner, preload_terminal);
+  let limits = PreloadLimits::new(&app.settings.config.render);
+  for (index, preload_terminal) in limits.list_window(selected, search.results.len()) {
+    if let Some(result) = search.results.get(index) {
+      preload_search_preview(app, ctx, result, preview, preload_terminal);
+    }
   }
 }
 
-pub(super) fn preload_selection_history(
-  app: &mut App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  area: Rect,
-) {
-  let Some(selected) = app.selection_index else {
+pub(super) fn preload_selection_history(app: &mut App, ctx: &mut PreloadCtx<'_>, area: Rect) {
+  let Some(selected) = app.selection.index else {
     return;
   };
-  if app.selections.is_empty() || area.width == 0 || area.height == 0 {
+  if app.selection.history.is_empty() || area.width == 0 || area.height == 0 {
     return;
   }
-  let ahead = app.settings.config.render.preload_ahead;
-  let behind = app.settings.config.render.preload_behind;
-  let terminal_ahead =
-    layer_preload_limit(ahead, app.settings.config.render.preload_terminal_ahead);
-  let terminal_behind =
-    layer_preload_limit(behind, app.settings.config.render.preload_terminal_behind);
-  let start = selected.saturating_sub(behind);
-  let end = selected
-    .saturating_add(ahead)
-    .min(app.selections.len().saturating_sub(1));
-  let selections = (start..=end)
-    .filter_map(|index| {
-      app
-        .selections
-        .get(index)
-        .copied()
-        .map(|selection| (index, selection))
-    })
+  let limits = PreloadLimits::new(&app.settings.config.render);
+  let window = limits
+    .list_window(selected, app.selection.history.len())
+    .filter_map(|(index, terminal)| Some((*app.selection.history.get(index)?, terminal)))
     .collect::<Vec<_>>();
-  for (index, selection) in selections {
-    let distance = index.abs_diff(selected);
-    let preload_terminal = if index >= selected {
-      distance <= terminal_ahead
-    } else {
-      distance <= terminal_behind
-    };
-    preload_selection_preview(app, renderer, tx, selection, area, preload_terminal);
+  for (selection, preload_terminal) in window {
+    preload_selection_preview(app, ctx, selection, area, preload_terminal);
   }
+}
+
+/// Queues page `page_index` fitted into `area`, plus its terminal render
+/// when `preload_terminal` is set and the page PNG exists.
+fn preload_fitted_page(
+  app: &App,
+  ctx: &mut PreloadCtx<'_>,
+  page_index: usize,
+  area: Rect,
+  preload_terminal: bool,
+) {
+  let Some(image_area) = preload_page_png(app, ctx, page_index, area) else {
+    return;
+  };
+  if preload_terminal && let Some(page) = app.page_image(page_index) {
+    ctx.preload_terminal(page, image_area);
+  }
+}
+
+/// Queues the page PNG for `area` and returns where the page would be
+/// drawn, or `None` when it does not fit.
+fn preload_page_png(
+  app: &App,
+  ctx: &mut PreloadCtx<'_>,
+  page_index: usize,
+  area: Rect,
+) -> Option<Rect> {
+  let (image_area, (target_width, target_height)) = fitted_page_request(app, page_index, area);
+  if image_area.width == 0 || image_area.height == 0 {
+    return None;
+  }
+  ctx
+    .pages
+    .preload(page_index, target_width, target_height, ctx.tx);
+  Some(image_area)
 }
 
 fn preload_search_preview(
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   result: &search::PdfSearchMatch,
   area: Rect,
   preload_terminal: bool,
 ) {
-  let image_area = fitted_page_area(
-    area,
-    app.terminal_cell_pixels,
-    app.page_dimensions(result.page_index),
-  );
-  if image_area.width == 0 || image_area.height == 0 {
+  let Some(image_area) = preload_page_png(app, ctx, result.page_index, area) else {
     return;
-  }
-  let (target_width, target_height) = page_target_pixels(
-    image_area.width,
-    image_area.height,
-    app.terminal_cell_pixels,
-    app.page_dimensions(result.page_index),
-  );
-  pages.preload(result.page_index, target_width, target_height, tx);
+  };
   if !preload_terminal {
     return;
   }
-  let Some(page) = app
-    .pages
-    .get(result.page_index)
-    .and_then(|page| page.as_ref())
-  else {
+  let Some(page) = app.page_image(result.page_index) else {
     return;
   };
-  let Ok(highlighted) = search::highlighted_page_image(
-    &app.settings.cache_dir,
-    page,
-    result,
-    app.settings.config.render.search_highlight_cache_max_bytes,
-  ) else {
-    return;
-  };
-  renderer.preload(
-    &highlighted,
-    image_area.width,
-    image_area.height,
-    RenderKind::Fit,
-    tx,
-  );
+  let steps = [OverlayStep::SearchHighlight(result.clone())];
+  if let OverlayState::Ready(highlighted) = ctx.overlays.request(page, &steps, true, ctx.tx) {
+    ctx.preload_terminal(&highlighted, image_area);
+  }
 }
 
 fn preload_selection_preview(
   app: &mut App,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut PreloadCtx<'_>,
   selected: selection::PdfSelection,
   area: Rect,
   preload_terminal: bool,
@@ -605,11 +452,11 @@ fn preload_selection_preview(
     area.height,
     app.terminal_cell_pixels,
   );
-  let key = app.request_selection_image(selected, target_width, target_height, true, tx);
+  let key = app.request_selection_image(selected, target_width, target_height, true, ctx.tx);
   if !preload_terminal {
     return;
   }
-  let Some(crop) = app.selection_images.get(&key) else {
+  let Some(crop) = app.selection.images.get(&key) else {
     return;
   };
   let image_area = fitted_page_area(
@@ -617,63 +464,45 @@ fn preload_selection_preview(
     app.terminal_cell_pixels,
     Some((crop.width.max(1), crop.height.max(1))),
   );
-  if image_area.width == 0 || image_area.height == 0 {
-    return;
+  if image_area.width > 0 && image_area.height > 0 {
+    ctx.preload_terminal(crop, image_area);
   }
-  renderer.preload(
-    crop,
-    image_area.width,
-    image_area.height,
-    RenderKind::Fit,
-    tx,
-  );
 }
 
-fn preload_page_preview(
-  app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
-  page_index: usize,
-  area: Rect,
-  preload_terminal: bool,
-) {
-  let image_area = fitted_page_area(
-    area,
-    app.terminal_cell_pixels,
-    app.page_dimensions(page_index),
-  );
-  if image_area.width == 0 || image_area.height == 0 {
-    return;
+/// Inner area of the preview panel of a two-panel view.
+fn preview_area(area: Rect, left_ratio: u16, right_ratio: u16) -> Rect {
+  let (_, preview) = split_panels(area, left_ratio, right_ratio);
+  safe_inner(preview, 1, 1)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn limits(
+    ahead: usize,
+    behind: usize,
+    terminal_ahead: usize,
+    terminal_behind: usize,
+  ) -> PreloadLimits {
+    PreloadLimits {
+      ahead,
+      behind,
+      slice_ahead: ahead,
+      slice_behind: behind,
+      terminal_ahead,
+      terminal_behind,
+    }
   }
-  let (target_width, target_height) = page_target_pixels(
-    image_area.width,
-    image_area.height,
-    app.terminal_cell_pixels,
-    app.page_dimensions(page_index),
-  );
-  pages.preload(page_index, target_width, target_height, tx);
-  if preload_terminal && let Some(page) = app.pages.get(page_index).and_then(|page| page.as_ref()) {
-    renderer.preload(
-      page,
-      image_area.width,
-      image_area.height,
-      RenderKind::Fit,
-      tx,
+
+  #[test]
+  fn list_window_is_clamped_and_marks_terminal_neighbors() {
+    let window = limits(3, 2, 1, 1).list_window(5, 7).collect::<Vec<_>>();
+    assert_eq!(window, vec![(3, false), (4, true), (5, true), (6, true)]);
+    assert_eq!(limits(3, 2, 1, 1).list_window(0, 0).count(), 0);
+    assert_eq!(
+      limits(0, 0, 0, 0).list_window(0, 1).collect::<Vec<_>>(),
+      vec![(0, true)]
     );
   }
-}
-
-fn preview_inner(area: Rect, left_ratio: u16, right_ratio: u16) -> Option<Rect> {
-  let left_ratio = u32::from(left_ratio.max(1));
-  let right_ratio = u32::from(right_ratio.max(1));
-  let chunks = ratatui::layout::Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([
-      Constraint::Ratio(left_ratio, left_ratio.saturating_add(right_ratio)),
-      Constraint::Ratio(right_ratio, left_ratio.saturating_add(right_ratio)),
-    ])
-    .split(area);
-  let preview = chunks.get(1).copied()?;
-  Some(safe_inner(preview, 1, 1))
 }

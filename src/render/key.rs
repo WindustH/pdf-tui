@@ -5,11 +5,7 @@ use crate::{config::RenderConfig, pdf::PageImage};
 
 use super::RenderKind;
 
-pub(super) fn hash_render_kind(
-  hasher: &mut Sha256,
-  kind: RenderKind,
-  _include_viewport_offset: bool,
-) {
+pub(super) fn hash_render_kind(hasher: &mut Sha256, kind: RenderKind) {
   match kind {
     RenderKind::Fit => hasher.update(b"fit"),
   }
@@ -32,7 +28,7 @@ pub(super) fn render_cache_key(
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(width.to_le_bytes());
   hasher.update(height.to_le_bytes());
-  hash_render_kind(&mut hasher, kind, true);
+  hash_render_kind(&mut hasher, kind);
   hasher.update(mode.label().as_bytes());
   hasher.update([0]);
   hash_render_config(&mut hasher, config);

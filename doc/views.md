@@ -1,144 +1,119 @@
 # Views
 
-`pdf-tui` has two reading layouts: scroll and grid.
-
-## Scroll
-
-Scroll mode is a static slice-based simulation of continuous scrolling.
-
-Syntax:
+## Scroll Layout
 
 ```text
 scroll <columns> <scroll_divisor>
 ```
 
-`columns` controls how many page columns are shown. `scroll_divisor` controls
-the maximum height of each page slice relative to the available display area.
-For example, a divisor of `3` means one movement step is approximately one
-third of the usable height.
+Pages are shown in `columns` columns and cut into horizontal slices of at most
+1/`scroll_divisor` of the screen height; one scroll step (`j`/`k`) moves one
+slice, and `h`/`l` move a screen. The page width is chosen to cover as much of
+the screen as possible across all scroll positions. Pages side by side are
+sliced on the same grid, so their slices line up.
 
-Pages are split into horizontal slices. Slices from the same page are adjacent
-without gaps. Each slice is handled like an independent image for caching,
-preloading, and terminal drawing.
+Each slice is its own image, cached, preloaded, and drawn independently. This
+simulates continuous scrolling without the flicker and transitional frames of
+cropping one large terminal image.
 
-This avoids the fragile transitional frames that true terminal-image cropping
-can produce while still preserving a reading progress model close to
-continuous scrolling.
-
-## Grid
-
-Grid mode shows whole pages in a fixed grid.
-
-Syntax:
+## Grid Layout
 
 ```text
 grid <rows> <columns>
 ```
 
-Navigation moves by rows, not by per-page focus. This matches PDF reading:
-the view is a window over pages rather than an image gallery with a focused
-item.
+Whole pages in a fixed grid. `j`/`k` move by one grid row, `h`/`l` by a whole
+grid. The status line shows the range of visible pages.
 
-## Progress
+## Reading Progress
 
-Reading progress is 0-based. The start of the first page is `0.0`.
-
-The progress model combines visible page regions into a weighted value. When
-switching layouts, `pdf-tui` finds the closest legal state in the new layout
-so the visible reading position remains stable.
+Positions are measured in pages from 0: `0.0` is the start of the first page,
+`2.5` the middle of the third. The position of a view is the average of the
+visible page regions, weighted by their visible area. When the layout or the
+terminal size changes, `pdf-tui` picks the scroll position of the new layout
+whose value is closest, so the same part of the document stays in view.
+`--progress` and remembered positions are applied the same way; a whole
+number such as `4` lands on the page that starts there.
 
 ## Frame-Synced Navigation
 
-When the current view's frame-sync switch is enabled, image-browsing actions
-wait for the current frame to finish rendering before accepting another browse
-action. Viewer sync is enabled by default; bookmark and search preview sync are
-disabled by default. Command input, editing, help, refresh, and non-image
-metadata navigation remain available.
+With frame sync on for a view (by default only the viewer), browsing actions
+are ignored until every image of the current frame has been drawn, so key
+repeat cannot skip over pages that were never shown. See the
+`frame_sync_navigation_*` settings in [Configuration](configuration.md#behavior).
 
 ## Metadata
 
-The metadata view shows PDF file information and PDF metadata reported by
-`exiftool`.
-
-Editable fields are written through `exiftool` after an explicit confirmation.
-The default viewer key is `m`; the default metadata edit key is `e`.
+`m` shows the file name, path, page count, page sizes, and the tags reported
+by `exiftool`. `e` opens these editable fields in `$EDITOR` as TOML: `Title`,
+`Author`, `Subject`, `Keywords`, `Creator`, `Producer`, `CreationDate`, and
+`ModifyDate`. An empty string clears a field. After saving and closing the
+editor, a dialog lists the changes; `y` writes them with `exiftool` and
+reloads the document.
 
 ## Bookmarks
 
-The bookmarks view shows the PDF outline reported by `pdftk`.
+`b` shows the PDF outline (read with `pdftk`) as a tree, with a preview of the
+selected bookmark's page on the right. On entry the bookmark closest to the
+reading position is selected and its parents are expanded; other entries start
+collapsed, and expansion is kept for the session.
 
-The view has two panels:
+`space` expands or collapses the selected entry, `z` expands everything or
+collapses everything, and `enter` shows the bookmarked page from its top.
+`h`/`l` resize the tree panel; the initial ratio is set by
+`behavior.bookmarks_left_ratio` and `bookmarks_right_ratio`.
 
-- the left panel is a collapsible bookmark tree
-- the right panel previews the page targeted by the hovered bookmark
-
-The default panel ratio is `2:1` and can be adjusted in the running session
-with the bookmark panel width actions. On first entry, bookmark children are
-collapsed. When entering the view, `pdf-tui` selects the bookmark closest to the
-current 0-based reading progress and expands only the necessary parent entries.
-Expansion state is retained for the rest of the session.
-
-`space` expands or collapses the hovered entry. `z` expands every entry on the
-first press and collapses every entry on the next press. `enter` jumps to the
-hovered bookmark progress. The default viewer key is `b`; the default bookmark
-edit key is `e`.
-
-Editable bookmarks are written through `pdftk` after an explicit confirmation.
+`e` opens the outline in `$EDITOR` as `[[bookmark]]` tables with `level`
+(1 for top level), `page` (1-based), and `title`. Delete a table to remove a
+bookmark or add one to create it. After confirmation (`y`), `pdftk` writes a
+new copy of the PDF, which replaces the original with its file permissions
+kept.
 
 ## Search
 
-The search view finds text embedded in the PDF. It does not run OCR.
+`s` opens a query box with the result list below it and a preview of the
+selected result's page on the right. The first search builds an index of the
+embedded text with `pdftotext -tsv` (cached until the PDF changes); `pdf-tui`
+does no OCR, so scanned pages without a text layer have no matches.
 
-The view has two panels:
+Matching ignores ASCII case and all whitespace, so `o w` finds `Hello World`:
+a query can span several words of one text line, but not a line break. At
+most 2000 results are listed. Each shows its line with the match highlighted, and the
+preview inverts the matched area on the page.
 
-- the left panel contains a search box and live result list
-- the right panel previews the page for the selected result
+`enter` jumps to the result, centering the match where the layout allows, and
+keeps it inverted on the page until the next navigation in the viewer.
 
-The default panel ratio is `2:1`. As text is typed in the search box, results
-are recomputed from an in-memory index built with `pdftotext -tsv`. Each result
-shows a one-line context with the matched words highlighted. The preview uses a
-temporary highlighted PNG, so the inverted match rectangle is visible with
-native terminal image protocols as well as Chafa fallback rendering.
-
-Opening a search result jumps back to the viewer, tries to center the matched
-area in the current layout, and temporarily inverts the matched area on the
-visible page or scroll slice. The next viewer navigation operation clears that
-jump highlight and restores the normal page image.
+Preview preloading waits for a pause in typing
+(`render.search_preload_idle_ms`) so a changing query does not start work for
+results that are about to disappear.
 
 ## Selection
 
-The viewer can create rectangular selections with the configured
-`selection_mark` action. By default this is `mouse_left`.
+Selections are rectangles in page coordinates, marked with the mouse:
 
-The first press must be on a visible PDF page. `pdf-tui` immediately inverts the
-terminal cell under the pointer with a small centered crosshair marker. A plain
-click leaves only this first anchor. If the pointer is dragged before release,
-the release position places the opposite anchor and creates a selection draft;
-drag motion does not update the selection continuously. The anchor position is
-stored as the page coordinate under the mouse event; the terminal cell size only
-controls the marker size. Terminal mouse input is cell-based, so this coordinate
-is the center of the reported terminal cell. Press `esc` to cancel active
-anchors.
+1. Press the left button on a page. A small crosshair marks the anchor under
+   the pointer.
+2. Either drag and release elsewhere, or click again: this places the opposite
+   corner. The rectangle is drawn as an inverted outline and added to the
+   selection history.
+3. Further clicks move the nearer corner. A click outside the page is clamped
+   to the page edge. `esc` removes the anchors (and an unfinished selection).
 
-The second click also places the opposite anchor and creates a selection draft,
-but does not immediately switch views. Once both anchors exist, the rectangle
-defined by their page-coordinate points is drawn with an inverted outline. Later
-clicks move whichever anchor is closer to the new pointer position. If the
-pointer is outside the anchor page, the endpoint is derived from the
-intersection between the page region and the rectangle formed with the fixed
-opposite anchor.
+Only the terminal cell under the pointer is known, so an anchor is the center
+of that cell.
 
-Finished selections are kept as session history. The viewer key `v` opens that
-history. The selection view centers the selected region and displays it as
-large as the available terminal area allows. In the selection view, the same
-`selection_mark` action can create a new selection inside the currently shown
-selection; that child selection is inserted directly after its parent in the
-session history. Press `v` in the selection view to commit and focus a child
-selection draft, or to prompt for a new child selection when no draft exists.
-Committed child selections are rendered again from the PDF source rather than
-cropped from the parent preview. Browsing to another selection also commits the
-draft before moving.
+`v` opens the selection view, which shows the current selection as large as
+the terminal allows. `j`/`k` or the mouse wheel move through the history. `y`
+copies the embedded text inside the rectangle (built from the same index as
+search) and `Y` copies a PNG of it, rendered anew from the PDF at up to
+`render.selection_image_max_pixels` pixels. Copying uses `wl-copy`, `xclip`,
+or `xsel` on Linux and `pbcopy` or `osascript` on macOS; Windows has no
+clipboard support yet.
 
-`j`/`k`, arrows, page keys, or mouse wheel browse the selection history. `y`
-copies embedded text inside the selection through the cached text index. `Y`
-renders and copies a PNG of the selection.
+Selecting inside the selection view creates a smaller selection within the
+shown one; it is inserted after its parent in the history. `v` commits it and
+shows it; moving to another selection commits it as well.
+
+The history lasts for the session and is cleared when the document is
+reloaded.

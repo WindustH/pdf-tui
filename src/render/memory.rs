@@ -101,7 +101,7 @@ impl RenderedImageMemoryCache {
     self.order.push_back(key.to_string());
   }
 
-  pub(super) fn insert(&mut self, key: String, image: RenderedImage) -> Vec<String> {
+  pub(super) fn insert(&mut self, key: String, image: RenderedImage) {
     if let Some(old) = self.entries.remove(&key) {
       self.subtract_entry_bytes(&old);
       self.order.retain(|candidate| candidate != &key);
@@ -117,17 +117,43 @@ impl RenderedImageMemoryCache {
         raw_bytes: bytes,
       },
     );
-    self.evict_over_budget(&key)
+    self.evict_over_budget(&key);
   }
 
-  fn evict_over_budget(&mut self, protected_key: &str) -> Vec<String> {
+  fn evict_over_budget(&mut self, protected_key: &str) {
     if self.compression {
       self.compress_cold_raw_entries(protected_key);
     }
-    let mut evicted = Vec::new();
-    self.evict_compressed_over_budget(protected_key, &mut evicted);
-    self.evict_raw_over_budget(protected_key, &mut evicted);
-    evicted
+    while self.compressed_bytes > self.compressed_max_bytes
+      && self.evict_oldest(protected_key, |entry| {
+        matches!(entry.storage, RenderedImageStorage::Compressed(_))
+      })
+    {}
+    while self.raw_bytes > self.raw_max_bytes
+      && self.evict_oldest(protected_key, |entry| {
+        matches!(entry.storage, RenderedImageStorage::Raw(_))
+      })
+    {}
+  }
+
+  /// Removes the least recently used entry accepted by `matches_entry`,
+  /// never `protected_key` or the last entry; returns whether one was
+  /// removed.
+  fn evict_oldest(
+    &mut self,
+    protected_key: &str,
+    matches_entry: impl Fn(&RenderedImageEntry) -> bool,
+  ) -> bool {
+    if self.entries.len() <= 1 {
+      return false;
+    }
+    let Some(candidate) = self.pop_oldest_evictable_matching(protected_key, matches_entry) else {
+      return false;
+    };
+    if let Some(entry) = self.entries.remove(&candidate) {
+      self.subtract_entry_bytes(&entry);
+    }
+    true
   }
 
   fn compress_cold_raw_entries(&mut self, protected_key: &str) {
@@ -179,36 +205,6 @@ impl RenderedImageMemoryCache {
       self.raw_bytes = self.raw_bytes.saturating_add(raw_bytes);
     }
     self.evict_over_budget(key);
-  }
-
-  fn evict_compressed_over_budget(&mut self, protected_key: &str, evicted: &mut Vec<String>) {
-    while self.compressed_bytes > self.compressed_max_bytes && self.entries.len() > 1 {
-      let Some(candidate) = self.pop_oldest_evictable_matching(protected_key, |entry| {
-        matches!(entry.storage, RenderedImageStorage::Compressed(_))
-      }) else {
-        break;
-      };
-      let Some(entry) = self.entries.remove(&candidate) else {
-        continue;
-      };
-      self.subtract_entry_bytes(&entry);
-      evicted.push(candidate);
-    }
-  }
-
-  fn evict_raw_over_budget(&mut self, protected_key: &str, evicted: &mut Vec<String>) {
-    while self.raw_bytes > self.raw_max_bytes && self.entries.len() > 1 {
-      let Some(candidate) = self.pop_oldest_evictable_matching(protected_key, |entry| {
-        matches!(entry.storage, RenderedImageStorage::Raw(_))
-      }) else {
-        break;
-      };
-      let Some(entry) = self.entries.remove(&candidate) else {
-        continue;
-      };
-      self.subtract_entry_bytes(&entry);
-      evicted.push(candidate);
-    }
   }
 
   fn pop_oldest_evictable_matching(

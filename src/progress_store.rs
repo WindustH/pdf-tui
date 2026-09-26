@@ -78,7 +78,11 @@ pub fn load_matching(
   entry.progress.is_finite().then_some(entry.progress)
 }
 
+/// Replaces the entry for `entry.path`. The read-modify-write runs under a
+/// cache lock so two instances closing at once keep both updates.
 pub fn upsert(cache_dir: &Path, entry: ProgressEntry) -> Result<()> {
+  let path = progress_file_path(cache_dir);
+  let _lock = crate::cache::acquire_cache_file_lock_sync(&path)?;
   let mut file = load(cache_dir);
   file
     .documents
@@ -91,7 +95,7 @@ pub fn upsert(cache_dir: &Path, entry: ProgressEntry) -> Result<()> {
   });
   file.documents.truncate(MAX_ENTRIES);
   let encoded = toml::to_string_pretty(&file).context("failed to encode progress store")?;
-  write_atomic_sync(&progress_file_path(cache_dir), encoded.as_bytes())
+  crate::cache::write_bytes_atomic_sync(&path, encoded.as_bytes())
 }
 
 fn load(cache_dir: &Path) -> ProgressFile {
@@ -107,18 +111,6 @@ fn load(cache_dir: &Path) -> ProgressFile {
       ProgressFile::default()
     }
   }
-}
-
-fn write_atomic_sync(path: &Path, bytes: &[u8]) -> Result<()> {
-  if let Some(parent) = path.parent() {
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-  }
-  let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-  fs::write(&temp_path, bytes)
-    .with_context(|| format!("failed to write {}", temp_path.display()))?;
-  fs::rename(&temp_path, path)
-    .with_context(|| format!("failed to rename into {}", path.display()))?;
-  Ok(())
 }
 
 #[cfg(test)]

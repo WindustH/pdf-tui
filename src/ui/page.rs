@@ -1,123 +1,77 @@
-use img_tui::ProtocolOverlay;
+//! Drawing primitives shared by all views: page and slice images, pending
+//! and error placeholders, and page frames.
+
 use ratatui::{
   Frame,
   buffer::CellDiffOption,
-  layout::{Alignment, Margin, Rect},
+  layout::{Alignment, Rect},
   style::Style,
   widgets::{Block, Borders, Paragraph, Wrap},
 };
-use tokio::sync::mpsc;
 
 use crate::{
   app::App,
-  event::{AsyncEvent, RenderedImage},
+  event::RenderedImage,
+  geometry::{DEFAULT_CELL_PIXELS, fitted_page_area, page_target_pixels, slot_content_area},
   layout,
-  pdf::{PageSliceSpec, PageStore},
-  render::{RenderKind, RenderStore},
+  pdf::{PageImage, PageSliceSpec},
+  render::RenderKind,
 };
 
-use super::page_overlay::apply_page_overlays;
+use super::{
+  DrawCtx,
+  page_overlay::{overlaid_or_plain, viewer_overlay_steps},
+};
 
-#[allow(clippy::too_many_arguments)]
+/// Draws one scroll slice; returns whether it is final (rendered at the
+/// exact size, or failed) so frame-synced navigation can wait for it.
 pub(super) fn draw_slice(
   frame: &mut Frame,
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut DrawCtx<'_>,
   item: layout::ScrollItem,
   area: Rect,
   viewport: Rect,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
 ) -> bool {
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  if area_intersects_any(area, obscured_areas) {
-    return true;
-  }
   let spec = slice_spec_for_item(app, item, viewport);
-  pages.request_slice(spec, tx);
-
-  if let Some(error) = app.slice_errors.get(&spec) {
-    draw_centered(
-      frame,
-      area,
-      format!(
-        "page {} slice {}/{} failed\n{error}",
-        item.page_index + 1,
-        item.slice_index + 1,
-        item.slice_count
-      ),
-    );
-    return true;
-  }
-
-  let Some(slice) = app.slices.get(&spec) else {
-    draw_image_pending(
-      frame,
-      area,
-      renderer,
-      format!(
-        "rendering page {} slice {}/{}",
-        item.page_index + 1,
-        item.slice_index + 1,
-        item.slice_count
-      ),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
-    return false;
+  ctx.pages.request_slice(spec, ctx.tx);
+  let slice_label = || {
+    format!(
+      "page {} slice {}/{}",
+      item.page_index + 1,
+      item.slice_index + 1,
+      item.slice_count
+    )
   };
 
-  let marked = apply_page_overlays(app, item.page_index, slice);
-  let slice = marked.as_ref().unwrap_or(slice);
-
-  let request = renderer.request(slice, area.width, area.height, RenderKind::Fit, tx);
-  let exact_ready = renderer
-    .rendered_key(&request.cache_key, &request.slot_key, false)
-    .is_some();
-  let current_failed = renderer.failure(&request.cache_key).is_some();
-  if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, true) {
-    if let Some(rendered) = renderer.get(&rendered_key) {
-      draw_rendered_page(frame, area, rendered, overlays);
-      drawn_render_keys.push(rendered_key);
-    }
-    exact_ready || current_failed
-  } else if let Some(error) = renderer.failure(&request.cache_key) {
-    draw_centered(frame, area, format!("render failed\n{error}"));
-    true
-  } else {
-    draw_image_pending(
-      frame,
-      area,
-      renderer,
-      format!(
-        "drawing page {} slice {}/{}",
-        item.page_index + 1,
-        item.slice_index + 1,
-        item.slice_count
-      ),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
-    false
+  if let Some(error) = app.slice_error(&spec) {
+    draw_centered(frame, area, format!("{} failed\n{error}", slice_label()));
+    return true;
   }
+  let Some(slice) = app.slice_image(&spec) else {
+    draw_image_pending(ctx, area, || format!("rendering {}", slice_label()));
+    return false;
+  };
+  let steps = viewer_overlay_steps(app, item.page_index, slice);
+  let (image, marks_ready) = overlaid_or_plain(ctx, slice, &steps);
+  let drawn = draw_image(frame, ctx, &image, area, || {
+    format!("drawing {}", slice_label())
+  });
+  drawn && marks_ready
 }
 
+/// Page slice request matching a scroll layout item at the current cell
+/// size.
 pub(super) fn slice_spec_for_item(
   app: &App,
   item: layout::ScrollItem,
   viewport: Rect,
 ) -> PageSliceSpec {
-  let (cell_pixel_width, cell_pixel_height) = app.terminal_cell_pixels.unwrap_or((8, 16));
+  let (cell_pixel_width, cell_pixel_height) =
+    app.terminal_cell_pixels.unwrap_or(DEFAULT_CELL_PIXELS);
   let target_width =
     u32::from(item.full_width.max(1)).saturating_mul(u32::from(cell_pixel_width.max(1)));
   let target_height =
@@ -156,122 +110,122 @@ pub(super) fn slice_spec_for_item(
   }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where page `index` is drawn inside `area` and the pixel size it is
+/// rasterized at.
+pub(super) fn fitted_page_request(app: &App, index: usize, area: Rect) -> (Rect, (u32, u32)) {
+  let dimensions = app.page_dimensions(index);
+  let image_area = fitted_page_area(area, app.terminal_cell_pixels, dimensions);
+  let target = page_target_pixels(
+    image_area.width,
+    image_area.height,
+    app.terminal_cell_pixels,
+    dimensions,
+  );
+  (image_area, target)
+}
+
+/// Requests page `index` fitted into `area` and draws the rendered page
+/// once available. Returns whether the drawn page is final.
 pub(super) fn draw_page(
   frame: &mut Frame,
   app: &App,
-  pages: &mut PageStore,
-  renderer: &mut RenderStore,
-  tx: &mpsc::UnboundedSender<AsyncEvent>,
+  ctx: &mut DrawCtx<'_>,
   index: usize,
   area: Rect,
-  _render_width: u16,
-  _render_height: u16,
-  kind: RenderKind,
-  obscured_areas: &[Rect],
-  overlays: &mut Vec<ProtocolOverlay>,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
-  drawn_render_keys: &mut Vec<String>,
 ) -> bool {
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  let image_area = fitted_page_area(area, app.terminal_cell_pixels, app.page_dimensions(index));
+  let (image_area, (target_width, target_height)) = fitted_page_request(app, index, area);
   if image_area.width == 0 || image_area.height == 0 {
     return true;
   }
-  if area_intersects_any(image_area, obscured_areas) {
-    return true;
-  }
-  let (target_width, target_height) = page_target_pixels(
-    image_area.width,
-    image_area.height,
-    app.terminal_cell_pixels,
-    app.page_dimensions(index),
-  );
-  pages.request(index, target_width, target_height, tx);
-
-  if let Some(error) = app.page_errors.get(index).and_then(|error| error.as_ref()) {
-    draw_centered(
-      frame,
-      image_area,
-      format!("page {} failed\n{error}", index + 1),
-    );
-    return true;
-  }
-
-  let Some(page) = app.pages.get(index).and_then(|page| page.as_ref()) else {
-    draw_image_pending(
-      frame,
-      image_area,
-      renderer,
-      format!("rendering page {}", index + 1),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
-    return false;
+  ctx
+    .pages
+    .request(index, target_width, target_height, ctx.tx);
+  let Some(page) = ready_page(frame, app, ctx, index, image_area) else {
+    return app.page_error(index).is_some();
   };
+  let steps = viewer_overlay_steps(app, index, page);
+  let (image, marks_ready) = overlaid_or_plain(ctx, page, &steps);
+  let drawn = draw_image(frame, ctx, &image, image_area, || {
+    format!("drawing page {}", index + 1)
+  });
+  drawn && marks_ready
+}
 
-  let marked = apply_page_overlays(app, index, page);
-  let page = marked.as_ref().unwrap_or(page);
+/// The rasterized page `index`, or `None` after drawing its error or
+/// pending placeholder into `area`.
+pub(super) fn ready_page<'a>(
+  frame: &mut Frame,
+  app: &'a App,
+  ctx: &mut DrawCtx<'_>,
+  index: usize,
+  area: Rect,
+) -> Option<&'a PageImage> {
+  if let Some(error) = app.page_error(index) {
+    draw_centered(frame, area, format!("page {} failed\n{error}", index + 1));
+    return None;
+  }
+  let page = app.page_image(index);
+  if page.is_none() {
+    draw_image_pending(ctx, area, || format!("rendering page {}", index + 1));
+  }
+  page
+}
 
-  let request = renderer.request(page, image_area.width, image_area.height, kind, tx);
-  let exact_ready = renderer
-    .rendered_key(&request.cache_key, &request.slot_key, false)
-    .is_some();
-  let current_failed = renderer.failure(&request.cache_key).is_some();
-  if let Some(rendered_key) = renderer.rendered_key(&request.cache_key, &request.slot_key, true) {
-    if let Some(rendered) = renderer.get(&rendered_key) {
-      draw_rendered_page(frame, image_area, rendered, overlays);
-      drawn_render_keys.push(rendered_key);
-    }
-    exact_ready || current_failed
-  } else if let Some(error) = renderer.failure(&request.cache_key) {
-    draw_centered(frame, image_area, format!("render failed\n{error}"));
+/// Draws `image` rendered for the terminal into `area`, or a placeholder
+/// while it renders. Returns whether the result is final: the render was
+/// drawn or failed.
+pub(super) fn draw_image(
+  frame: &mut Frame,
+  ctx: &mut DrawCtx<'_>,
+  image: &PageImage,
+  area: Rect,
+  pending_message: impl FnOnce() -> String,
+) -> bool {
+  let cache_key = ctx
+    .renderer
+    .request(image, area.width, area.height, RenderKind::Fit, ctx.tx);
+  if let Some(rendered) = ctx.renderer.get(&cache_key) {
+    draw_rendered_image(frame, area, rendered, &mut ctx.images.overlays);
+    ctx.images.drawn_render_keys.push(cache_key);
+    true
+  } else if let Some(error) = ctx.renderer.failure(&cache_key) {
+    draw_centered(frame, area, format!("render failed\n{error}"));
     true
   } else {
-    draw_image_pending(
-      frame,
-      image_area,
-      renderer,
-      format!("drawing page {}", index + 1),
-      frame_message,
-      preserve_overlays,
-      preserve_areas,
-    );
+    draw_image_pending(ctx, area, pending_message);
     false
   }
 }
 
+/// Records that `area` is still waiting for an image: protocol images from
+/// the previous frame stay in place, and the status line shows the first
+/// pending message of the frame.
 pub(super) fn draw_image_pending(
-  _frame: &mut Frame,
+  ctx: &mut DrawCtx<'_>,
   area: Rect,
-  renderer: &RenderStore,
-  text: String,
-  frame_message: &mut Option<String>,
-  preserve_overlays: &mut bool,
-  preserve_areas: &mut Vec<Rect>,
+  message: impl FnOnce() -> String,
 ) {
-  if renderer.draws_with_protocol() {
-    *preserve_overlays = true;
-    preserve_areas.push(area);
+  if ctx.renderer.draws_with_protocol() {
+    ctx.images.preserve_overlays = true;
+    ctx.images.preserve_areas.push(area);
   }
-  frame_message.get_or_insert(text);
+  ctx.images.pending_message.get_or_insert_with(message);
 }
 
-pub(super) fn draw_rendered_page(
+fn draw_rendered_image(
   frame: &mut Frame,
   area: Rect,
   rendered: &RenderedImage,
-  overlays: &mut Vec<ProtocolOverlay>,
+  overlays: &mut Vec<img_tui::ProtocolOverlay>,
 ) {
   match rendered {
-    RenderedImage::Symbols { mode, text } => {
-      let _mode_label = mode.label();
-      frame.render_widget(Paragraph::new(text.clone()), area);
+    RenderedImage::Symbols { text, .. } => {
+      // Render by reference: cloning a full-screen styled `Text` every
+      // frame costs one allocation per span.
+      frame.render_widget(text, area);
     }
     RenderedImage::Protocol {
       mode,
@@ -282,7 +236,7 @@ pub(super) fn draw_rendered_page(
       erase,
     } => {
       reserve_protocol_area(frame, area);
-      overlays.push(ProtocolOverlay {
+      overlays.push(img_tui::ProtocolOverlay {
         area,
         mode: *mode,
         data: data.clone(),
@@ -295,83 +249,19 @@ pub(super) fn draw_rendered_page(
   }
 }
 
-pub(super) fn draw_page_frame(frame: &mut Frame, app: &App, area: Rect, focused: bool) -> Rect {
-  if !app.layout.show_border {
-    return safe_inner(area, app.layout.padding, app.layout.padding);
+/// Draws a grid slot's optional border and returns the area left for the
+/// page.
+pub(super) fn draw_page_frame(frame: &mut Frame, app: &App, slot: Rect) -> Rect {
+  if app.layout.show_border {
+    let theme = &app.settings.theme;
+    frame.render_widget(
+      Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.color(&theme.border))),
+      slot,
+    );
   }
-  let theme = &app.settings.theme;
-  let border = if focused {
-    theme.color(&theme.focused_border)
-  } else {
-    theme.color(&theme.border)
-  };
-  frame.render_widget(
-    Block::default()
-      .borders(Borders::ALL)
-      .border_style(Style::default().fg(border)),
-    area,
-  );
-  safe_inner(
-    area,
-    app.layout.padding.saturating_add(1),
-    app.layout.padding.saturating_add(1),
-  )
-}
-
-pub(super) fn page_target_pixels(
-  width: u16,
-  height: u16,
-  cell_pixels: Option<(u16, u16)>,
-  page_dimensions: Option<(u32, u32)>,
-) -> (u32, u32) {
-  let (cell_width, cell_height) = cell_pixels.unwrap_or((8, 16));
-  let max_width = u32::from(width.max(1)).saturating_mul(u32::from(cell_width.max(1)));
-  let max_height = u32::from(height.max(1)).saturating_mul(u32::from(cell_height.max(1)));
-  let Some((page_width, page_height)) = page_dimensions else {
-    return (max_width.max(1), max_height.max(1));
-  };
-  let scale = (f64::from(max_width.max(1)) / f64::from(page_width.max(1)))
-    .min(f64::from(max_height.max(1)) / f64::from(page_height.max(1)));
-  let target_width = (f64::from(page_width.max(1)) * scale)
-    .round()
-    .clamp(1.0, f64::from(u32::MAX)) as u32;
-  let target_height = (f64::from(page_height.max(1)) * scale)
-    .round()
-    .clamp(1.0, f64::from(u32::MAX)) as u32;
-  (target_width, target_height)
-}
-
-pub(super) fn fitted_page_area(
-  area: Rect,
-  cell_pixels: Option<(u16, u16)>,
-  page_dimensions: Option<(u32, u32)>,
-) -> Rect {
-  if area.width == 0 || area.height == 0 {
-    return area;
-  }
-  let (target_width, target_height) =
-    page_target_pixels(area.width, area.height, cell_pixels, page_dimensions);
-  let (cell_width, cell_height) = cell_pixels.unwrap_or((8, 16));
-  let width = ceil_div_u32(target_width.max(1), u32::from(cell_width.max(1)))
-    .min(u32::from(area.width))
-    .max(1) as u16;
-  let height = ceil_div_u32(target_height.max(1), u32::from(cell_height.max(1)))
-    .min(u32::from(area.height))
-    .max(1) as u16;
-  Rect::new(
-    area.x.saturating_add(area.width.saturating_sub(width) / 2),
-    area
-      .y
-      .saturating_add(area.height.saturating_sub(height) / 2),
-    width,
-    height,
-  )
-}
-
-fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
-  value
-    .saturating_add(divisor.saturating_sub(1))
-    .saturating_div(divisor.max(1))
+  slot_content_area(slot, &app.layout)
 }
 
 pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {
@@ -383,10 +273,12 @@ pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<Strin
   );
 }
 
+/// Marks protocol-image cells so the text diff never overwrites them.
 fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
+  let area = area.intersection(frame.area());
   let buf = frame.buffer_mut();
-  for y in area.y..area.y.saturating_add(area.height) {
-    for x in area.x..area.x.saturating_add(area.width) {
+  for y in area.top()..area.bottom() {
+    for x in area.left()..area.right() {
       if let Some(cell) = buf.cell_mut((x, y)) {
         cell.set_diff_option(CellDiffOption::Skip);
       }
@@ -394,26 +286,32 @@ fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
   }
 }
 
-pub(super) fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {
-  if area.width <= horizontal.saturating_mul(2) || area.height <= vertical.saturating_mul(2) {
-    return Rect::new(area.x, area.y, 0, 0);
+#[cfg(test)]
+mod tests {
+  use ratatui::{
+    buffer::Buffer,
+    style::{Color, Style},
+    text::{Line, Span, Text},
+    widgets::Widget,
+  };
+
+  use super::*;
+
+  #[test]
+  fn symbols_render_like_the_previous_paragraph_path() {
+    let text = Text::from(vec![
+      Line::from(vec![
+        Span::styled("ab", Style::default().fg(Color::Red)),
+        Span::styled("cdefgh", Style::default().bg(Color::Blue)),
+      ]),
+      Line::from("xyz"),
+      Line::from("clipped"),
+    ]);
+    let area = Rect::new(1, 1, 5, 2);
+    let mut expected = Buffer::empty(Rect::new(0, 0, 8, 4));
+    Paragraph::new(text.clone()).render(area, &mut expected);
+    let mut actual = Buffer::empty(Rect::new(0, 0, 8, 4));
+    (&text).render(area, &mut actual);
+    assert_eq!(actual, expected);
   }
-  area.inner(Margin {
-    horizontal,
-    vertical,
-  })
-}
-
-pub(super) fn area_intersects_any(area: Rect, others: &[Rect]) -> bool {
-  others
-    .iter()
-    .copied()
-    .any(|other| rects_intersect(area, other))
-}
-
-fn rects_intersect(a: Rect, b: Rect) -> bool {
-  a.x < b.x.saturating_add(b.width)
-    && b.x < a.x.saturating_add(a.width)
-    && a.y < b.y.saturating_add(b.height)
-    && b.y < a.y.saturating_add(a.height)
 }

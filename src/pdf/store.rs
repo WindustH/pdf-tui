@@ -1,9 +1,15 @@
-use std::collections::{BinaryHeap, HashMap, HashSet};
+//! Scheduling of page rasterization: whole-page PNGs and scroll slices,
+//! visible requests first, with results reported as `AsyncEvent::Page`.
+
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::event::{AsyncEvent, PageOutcome};
+use crate::{
+  event::{AsyncEvent, PageOutcome},
+  job_queue::{JobPriority, JobQueue},
+};
 
 use super::{
   document::{PageSliceSpec, PdfDocument},
@@ -14,20 +20,13 @@ use super::{
 
 pub struct PageStore {
   document: PdfDocument,
-  in_flight: HashSet<PageRequestKey>,
-  visible_waits: HashSet<PageRequestKey>,
+  jobs: JobQueue<PageJob, PageJobPriority>,
+  /// Queued or running jobs a visible request is waiting for; finishing one
+  /// triggers a redraw even when it started as a preload.
+  visible_waits: HashSet<PageJob>,
+  /// Last finished whole-page request per page.
   completed: HashMap<usize, PageRequestKey>,
-  slice_in_flight: HashSet<PageSliceRequestKey>,
-  slice_visible_waits: HashSet<PageSliceRequestKey>,
-  slice_completed: HashSet<PageSliceRequestKey>,
-  page_priorities: HashMap<PageRequestKey, PageJobPriority>,
-  slice_priorities: HashMap<PageSliceRequestKey, PageJobPriority>,
-  active_pages: HashSet<PageRequestKey>,
-  active_slices: HashSet<PageSliceRequestKey>,
-  active_preloads: usize,
-  pending: BinaryHeap<PendingPageJob>,
-  sequence: u64,
-  max_concurrent: usize,
+  completed_slices: HashSet<PageSliceSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,8 +37,18 @@ pub(super) struct PageRequestKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PageSliceRequestKey {
-  spec: PageSliceSpec,
+enum PageJob {
+  Page(PageRequestKey),
+  Slice(PageSliceSpec),
+}
+
+impl PageJob {
+  fn page_index(self) -> usize {
+    match self {
+      Self::Page(key) => key.page_index,
+      Self::Slice(spec) => spec.page_index,
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,109 +58,31 @@ enum PageJobPriority {
   Visible,
 }
 
-impl PageJobPriority {
-  fn is_preload(self) -> bool {
-    !matches!(self, Self::Visible)
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingPageJobKind {
-  Page(PageRequestKey),
-  Slice(PageSliceRequestKey),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingPageJob {
-  priority: PageJobPriority,
-  sequence: u64,
-  kind: PendingPageJobKind,
-}
-
-impl Ord for PendingPageJob {
-  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    self
-      .priority
-      .cmp(&other.priority)
-      .then_with(|| other.sequence.cmp(&self.sequence))
-  }
-}
-
-impl PartialOrd for PendingPageJob {
-  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-    Some(self.cmp(other))
-  }
+impl JobPriority for PageJobPriority {
+  const VISIBLE: Self = Self::Visible;
 }
 
 impl PageStore {
   pub fn new(document: PdfDocument, max_concurrent: usize) -> Self {
-    let max_concurrent = max_concurrent.max(1);
     Self {
       document,
-      in_flight: HashSet::new(),
+      jobs: JobQueue::new(max_concurrent),
       visible_waits: HashSet::new(),
       completed: HashMap::new(),
-      slice_in_flight: HashSet::new(),
-      slice_visible_waits: HashSet::new(),
-      slice_completed: HashSet::new(),
-      page_priorities: HashMap::new(),
-      slice_priorities: HashMap::new(),
-      active_pages: HashSet::new(),
-      active_slices: HashSet::new(),
-      active_preloads: 0,
-      pending: BinaryHeap::new(),
-      sequence: 0,
-      max_concurrent,
+      completed_slices: HashSet::new(),
     }
   }
 
   pub fn clear_state(&mut self) {
-    self.in_flight.clear();
+    self.jobs.clear();
     self.visible_waits.clear();
     self.completed.clear();
-    self.slice_in_flight.clear();
-    self.slice_visible_waits.clear();
-    self.slice_completed.clear();
-    self.page_priorities.clear();
-    self.slice_priorities.clear();
-    self.active_pages.clear();
-    self.active_slices.clear();
-    self.active_preloads = 0;
-    self.pending.clear();
-    self.sequence = 0;
+    self.completed_slices.clear();
   }
 
   pub fn cancel_preloads(&mut self) {
-    let pending = std::mem::take(&mut self.pending);
-    self.pending = pending
-      .into_iter()
-      .filter(|job| !job.priority.is_preload())
-      .collect();
-
-    let queued_pages = self
-      .page_priorities
-      .iter()
-      .filter_map(|(key, priority)| {
-        (priority.is_preload() && !self.active_pages.contains(key)).then_some(*key)
-      })
-      .collect::<Vec<_>>();
-    for key in queued_pages {
-      self.in_flight.remove(&key);
-      self.visible_waits.remove(&key);
-      self.page_priorities.remove(&key);
-    }
-
-    let queued_slices = self
-      .slice_priorities
-      .iter()
-      .filter_map(|(key, priority)| {
-        (priority.is_preload() && !self.active_slices.contains(key)).then_some(*key)
-      })
-      .collect::<Vec<_>>();
-    for key in queued_slices {
-      self.slice_in_flight.remove(&key);
-      self.slice_visible_waits.remove(&key);
-      self.slice_priorities.remove(&key);
+    for job in self.jobs.cancel_queued_preloads() {
+      self.visible_waits.remove(&job);
     }
   }
 
@@ -161,78 +92,13 @@ impl PageStore {
   }
 
   pub fn request_slice(&mut self, spec: PageSliceSpec, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    self.request_slice_with_priority(spec, tx, PageJobPriority::Visible);
+    self.request_slice_with_priority(spec, PageJobPriority::Visible, tx);
   }
 
   pub fn preload_slice(&mut self, spec: PageSliceSpec, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self.max_preloads() == 0 {
-      debug!(
-        page = spec.page_index + 1,
-        slice = spec.slice_index + 1,
-        slice_count = spec.slice_count,
-        max_concurrent = self.max_concurrent,
-        "page slice preload skipped because no preload slots are available"
-      );
-      return;
-    };
-    self.request_slice_with_priority(spec, tx, PageJobPriority::SlicePreload);
-  }
-
-  fn request_slice_with_priority(
-    &mut self,
-    spec: PageSliceSpec,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
-    priority: PageJobPriority,
-  ) {
-    let spec = spec.normalized();
-    let key = PageSliceRequestKey { spec };
-    let preload = priority.is_preload();
-    if spec.page_index >= self.document.page_count || self.slice_completed.contains(&key) {
-      debug!(
-        page = spec.page_index + 1,
-        slice = spec.slice_index + 1,
-        slice_count = spec.slice_count,
-        target_width = spec.target_width,
-        target_height = spec.target_height,
-        preload,
-        completed = self.slice_completed.contains(&key),
-        page_count = self.document.page_count,
-        "page slice request ignored"
-      );
-      return;
+    if self.jobs.allows_preloads() {
+      self.request_slice_with_priority(spec, PageJobPriority::SlicePreload, tx);
     }
-    if self.slice_in_flight.contains(&key) {
-      if !preload {
-        self.slice_visible_waits.insert(key);
-        self.promote_slice(key, tx);
-      }
-      debug!(
-        page = spec.page_index + 1,
-        slice = spec.slice_index + 1,
-        slice_count = spec.slice_count,
-        target_width = spec.target_width,
-        target_height = spec.target_height,
-        preload,
-        "page slice request reused in-flight render"
-      );
-      return;
-    }
-    self.slice_in_flight.insert(key);
-    self.slice_priorities.insert(key, priority);
-    self.push_pending(PendingPageJobKind::Slice(key), priority);
-    debug!(
-      page = spec.page_index + 1,
-      slice = spec.slice_index + 1,
-      slice_count = spec.slice_count,
-      target_width = spec.target_width,
-      target_height = spec.target_height,
-      slice_y = spec.slice_y,
-      slice_height = spec.slice_height,
-      preload,
-      pending = self.pending.len(),
-      "queued page slice render request"
-    );
-    self.schedule_pending(tx);
   }
 
   pub fn request(
@@ -242,13 +108,8 @@ impl PageStore {
     target_height: u32,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    self.request_with_priority(
-      page_index,
-      target_width,
-      target_height,
-      tx,
-      PageJobPriority::Visible,
-    );
+    let key = page_key(page_index, target_width, target_height);
+    self.request_page_with_priority(key, PageJobPriority::Visible, tx);
   }
 
   pub fn preload(
@@ -258,322 +119,167 @@ impl PageStore {
     target_height: u32,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    if self.max_preloads() == 0 {
-      debug!(
-        page = page_index + 1,
-        max_concurrent = self.max_concurrent,
-        "page preload skipped because no preload slots are available"
-      );
-      return;
-    };
-    self.request_with_priority(
-      page_index,
-      target_width,
-      target_height,
-      tx,
-      PageJobPriority::PagePreload,
-    );
+    if self.jobs.allows_preloads() {
+      let key = page_key(page_index, target_width, target_height);
+      self.request_page_with_priority(key, PageJobPriority::PagePreload, tx);
+    }
   }
 
-  fn request_with_priority(
+  fn request_slice_with_priority(
     &mut self,
-    page_index: usize,
-    target_width: u32,
-    target_height: u32,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    spec: PageSliceSpec,
     priority: PageJobPriority,
+    tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    let key = PageRequestKey {
-      page_index,
-      target_width: target_width.max(1),
-      target_height: target_height.max(1),
-    };
-    let preload = priority.is_preload();
-    if page_index >= self.document.page_count
-      || self
-        .completed
-        .get(&page_index)
-        .is_some_and(|done| *done == key)
-    {
-      debug!(
-        page = page_index + 1,
-        target_width = key.target_width,
-        target_height = key.target_height,
-        preload,
-        completed = self.completed.contains_key(&page_index),
-        page_count = self.document.page_count,
-        "page request ignored"
-      );
+    let spec = spec.normalized();
+    if self.completed_slices.contains(&spec) {
       return;
     }
-    if self.in_flight.contains(&key) {
-      if !preload {
-        self.visible_waits.insert(key);
-        self.promote_page(key, tx);
-      }
-      debug!(
-        page = page_index + 1,
-        target_width = key.target_width,
-        target_height = key.target_height,
-        preload,
-        "page request reused in-flight render"
-      );
-      return;
-    }
-    self.in_flight.insert(key);
-    self.page_priorities.insert(key, priority);
-    self.push_pending(PendingPageJobKind::Page(key), priority);
-    debug!(
-      page = page_index + 1,
-      target_width = key.target_width,
-      target_height = key.target_height,
-      preload,
-      pending = self.pending.len(),
-      "queued page render request"
-    );
-    self.schedule_pending(tx);
+    self.request_job(PageJob::Slice(spec), priority, tx);
   }
 
-  fn push_pending(&mut self, kind: PendingPageJobKind, priority: PageJobPriority) {
-    let sequence = self.sequence;
-    self.sequence = self.sequence.wrapping_add(1);
-    self.pending.push(PendingPageJob {
-      priority,
-      sequence,
-      kind,
-    });
-  }
-
-  fn promote_page(&mut self, key: PageRequestKey, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self
-      .page_priorities
-      .get(&key)
-      .is_some_and(|priority| *priority < PageJobPriority::Visible)
-    {
-      self.page_priorities.insert(key, PageJobPriority::Visible);
-      self.push_pending(PendingPageJobKind::Page(key), PageJobPriority::Visible);
-      self.schedule_pending(tx);
-    }
-  }
-
-  fn promote_slice(&mut self, key: PageSliceRequestKey, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self
-      .slice_priorities
-      .get(&key)
-      .is_some_and(|priority| *priority < PageJobPriority::Visible)
-    {
-      self.slice_priorities.insert(key, PageJobPriority::Visible);
-      self.push_pending(PendingPageJobKind::Slice(key), PageJobPriority::Visible);
-      self.schedule_pending(tx);
-    }
-  }
-
-  fn active_count(&self) -> usize {
-    self.active_pages.len() + self.active_slices.len()
-  }
-
-  fn max_preloads(&self) -> usize {
-    self.max_concurrent.saturating_sub(1)
-  }
-
-  fn schedule_pending(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    while self.active_count() < self.max_concurrent {
-      let Some(job) = self.pending.pop() else {
-        break;
-      };
-      match job.kind {
-        PendingPageJobKind::Page(key) => {
-          if !self.in_flight.contains(&key) || self.active_pages.contains(&key) {
-            continue;
-          }
-          let Some(priority) = self.page_priorities.get(&key).copied() else {
-            continue;
-          };
-          if job.priority < priority {
-            continue;
-          }
-          if priority.is_preload() && self.active_preloads >= self.max_preloads() {
-            self.pending.push(job);
-            break;
-          }
-          self.spawn_page_job(key, priority, tx);
-        }
-        PendingPageJobKind::Slice(key) => {
-          if !self.slice_in_flight.contains(&key) || self.active_slices.contains(&key) {
-            continue;
-          }
-          let Some(priority) = self.slice_priorities.get(&key).copied() else {
-            continue;
-          };
-          if job.priority < priority {
-            continue;
-          }
-          if priority.is_preload() && self.active_preloads >= self.max_preloads() {
-            self.pending.push(job);
-            break;
-          }
-          self.spawn_slice_job(key, priority, tx);
-        }
-      }
-    }
-  }
-
-  fn spawn_page_job(
+  fn request_page_with_priority(
     &mut self,
     key: PageRequestKey,
     priority: PageJobPriority,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    let preload = priority.is_preload();
-    self.active_pages.insert(key);
-    if preload {
-      self.active_preloads = self.active_preloads.saturating_add(1);
+    if self.completed.get(&key.page_index) == Some(&key) {
+      return;
     }
-    debug!(
-      page = key.page_index + 1,
-      target_width = key.target_width,
-      target_height = key.target_height,
-      preload,
-      active = self.active_count(),
-      active_preloads = self.active_preloads,
-      pending = self.pending.len(),
-      "started page render request"
-    );
-    let document = self.document.clone();
-    let source_size_bytes = document.size_bytes;
-    let source_modified_nanos = document.modified_nanos;
-    let tx = tx.clone();
-    tokio::spawn(async move {
-      let result = if preload {
-        preload_page_image(&document, key).await
-      } else {
-        render_page_image(&document, key).await
-      }
-      .map_err(|error| error.to_string());
-      let _ = tx.send(AsyncEvent::Page(PageOutcome {
-        source_size_bytes,
-        source_modified_nanos,
-        page_index: key.page_index,
-        target_width: key.target_width,
-        target_height: key.target_height,
-        slice: None,
-        preload,
-        result,
-      }));
-    });
+    self.request_job(PageJob::Page(key), priority, tx);
   }
 
-  fn spawn_slice_job(
+  fn request_job(
     &mut self,
-    key: PageSliceRequestKey,
+    job: PageJob,
     priority: PageJobPriority,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) {
-    let spec = key.spec;
-    let preload = priority.is_preload();
-    self.active_slices.insert(key);
-    if preload {
-      self.active_preloads = self.active_preloads.saturating_add(1);
+    if job.page_index() >= self.document.page_count {
+      return;
     }
-    debug!(
-      page = spec.page_index + 1,
-      slice = spec.slice_index + 1,
-      slice_count = spec.slice_count,
-      target_width = spec.target_width,
-      target_height = spec.target_height,
-      preload,
-      active = self.active_count(),
-      active_preloads = self.active_preloads,
-      pending = self.pending.len(),
-      "started page slice render request"
-    );
-    let document = self.document.clone();
-    let source_size_bytes = document.size_bytes;
-    let source_modified_nanos = document.modified_nanos;
-    let tx = tx.clone();
-    tokio::spawn(async move {
-      let result = if preload {
-        preload_page_slice_image(&document, spec).await
-      } else {
-        render_page_slice_image(&document, spec).await
+    if self.jobs.contains(&job) {
+      if !priority.is_preload() {
+        self.visible_waits.insert(job);
+        self.jobs.promote(&job, priority);
+        self.schedule(tx);
       }
-      .map_err(|error| error.to_string());
-      let _ = tx.send(AsyncEvent::Page(PageOutcome {
-        source_size_bytes,
-        source_modified_nanos,
-        page_index: spec.page_index,
-        target_width: spec.target_width,
-        target_height: spec.target_height,
-        slice: Some(spec),
-        preload,
-        result,
-      }));
-    });
+      return;
+    }
+    self.jobs.enqueue(job, priority);
+    debug!(
+      ?job,
+      ?priority,
+      queued = self.jobs.queued_count(),
+      "queued page request"
+    );
+    self.schedule(tx);
   }
 
+  fn schedule(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    while let Some((job, priority)) = self.jobs.start_next() {
+      debug!(
+        ?job,
+        ?priority,
+        running = self.jobs.running_count(),
+        running_preloads = self.jobs.running_preloads(),
+        queued = self.jobs.queued_count(),
+        "started page request"
+      );
+      spawn_page_job(
+        self.document.clone(),
+        job,
+        priority.is_preload(),
+        tx.clone(),
+      );
+    }
+  }
+
+  /// Records a finished job; returns whether a visible request was waiting
+  /// for it. `completed` marks it done so it is not requested again.
   pub fn finish(
     &mut self,
     page: &PageOutcome,
     completed: bool,
     tx: &mpsc::UnboundedSender<AsyncEvent>,
   ) -> bool {
-    if let Some(spec) = page.slice {
-      let slice_id = spec.id();
-      let key = PageSliceRequestKey { spec };
-      self.slice_in_flight.remove(&key);
-      self.slice_priorities.remove(&key);
-      if self.active_slices.remove(&key) && page.preload {
-        self.active_preloads = self.active_preloads.saturating_sub(1);
-      }
-      let visible_wait = self.slice_visible_waits.remove(&key);
-      if completed {
-        self.slice_completed.insert(key);
-      }
-      debug!(
-        page = page.page_index + 1,
-        slice = slice_id.slice_index + 1,
-        slice_count = slice_id.slice_count,
-        target_width = spec.target_width,
-        target_height = spec.target_height,
-        completed,
-        visible_wait,
-        in_flight = self.slice_in_flight.len(),
-        active = self.active_count(),
-        active_preloads = self.active_preloads,
-        pending = self.pending.len(),
-        "page slice store finish"
-      );
-      self.schedule_pending(tx);
-      return visible_wait;
-    }
-
-    let key = PageRequestKey {
-      page_index: page.page_index,
-      target_width: page.target_width.max(1),
-      target_height: page.target_height.max(1),
+    let job = match page.slice {
+      Some(spec) => PageJob::Slice(spec),
+      None => PageJob::Page(page_key(
+        page.page_index,
+        page.target_width,
+        page.target_height,
+      )),
     };
-    self.in_flight.remove(&key);
-    self.page_priorities.remove(&key);
-    if self.active_pages.remove(&key) && page.preload {
-      self.active_preloads = self.active_preloads.saturating_sub(1);
-    }
-    let visible_wait = self.visible_waits.remove(&key);
+    self.jobs.finish(&job);
+    let visible_wait = self.visible_waits.remove(&job);
     if completed {
-      self.completed.insert(page.page_index, key);
+      match job {
+        PageJob::Page(key) => {
+          self.completed.insert(key.page_index, key);
+        }
+        PageJob::Slice(spec) => {
+          self.completed_slices.insert(spec);
+        }
+      }
     }
     debug!(
-      page = page.page_index + 1,
-      target_width = key.target_width,
-      target_height = key.target_height,
+      ?job,
       completed,
       visible_wait,
-      in_flight = self.in_flight.len(),
-      active = self.active_count(),
-      active_preloads = self.active_preloads,
-      pending = self.pending.len(),
+      running = self.jobs.running_count(),
+      queued = self.jobs.queued_count(),
       "page store finish"
     );
-    self.schedule_pending(tx);
+    self.schedule(tx);
     visible_wait
   }
+}
+
+fn page_key(page_index: usize, target_width: u32, target_height: u32) -> PageRequestKey {
+  PageRequestKey {
+    page_index,
+    target_width: target_width.max(1),
+    target_height: target_height.max(1),
+  }
+}
+
+fn spawn_page_job(
+  document: PdfDocument,
+  job: PageJob,
+  preload: bool,
+  tx: mpsc::UnboundedSender<AsyncEvent>,
+) {
+  tokio::spawn(async move {
+    let (result, slice, key) = match job {
+      PageJob::Page(key) => {
+        let result = if preload {
+          preload_page_image(&document, key).await
+        } else {
+          render_page_image(&document, key).await
+        };
+        (result, None, key)
+      }
+      PageJob::Slice(spec) => {
+        let result = if preload {
+          preload_page_slice_image(&document, spec).await
+        } else {
+          render_page_slice_image(&document, spec).await
+        };
+        let key = page_key(spec.page_index, spec.target_width, spec.target_height);
+        (result, Some(spec), key)
+      }
+    };
+    let _ = tx.send(AsyncEvent::Page(PageOutcome {
+      source_size_bytes: document.size_bytes,
+      source_modified_nanos: document.modified_nanos,
+      page_index: key.page_index,
+      target_width: key.target_width,
+      target_height: key.target_height,
+      slice,
+      preload,
+      result: result.map_err(|error| error.to_string()),
+    }));
+  });
 }

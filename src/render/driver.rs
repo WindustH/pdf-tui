@@ -382,6 +382,6 @@ fn decode_rendered_with_refresh(
     })
   } else {
     let text: Text<'static> = bytes.data.into_text().map_err(|error| error.to_string())?;
-    Ok(RenderedImage::Symbols { mode, text })
+    Ok(RenderedImage::Symbols { text })
   }
 }

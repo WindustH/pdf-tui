@@ -1,108 +1,115 @@
 # Controls
 
-Key bindings are context aware. Viewer actions are active while reading the
-PDF. Metadata actions are active in the metadata view. Bookmark actions are
-active in the bookmarks view. Selection actions are active in the selection
-view. Input actions are active while the command prompt is open.
+These are the default bindings; all of them can be changed in
+[`keymap.toml`](keymap.md). `F1` shows the bindings of the current view. `:`
+opens the [command prompt](commands.md) in the viewer, metadata, and
+bookmarks views.
 
 ## Viewer
 
-- `q`, `ctrl-c`: quit
-- `f1`: show viewer key bindings
-- `j`, `down`: move down
-- `k`, `up`: move up
-- `pgdn`: move down by a page-style step
-- `pgup`: move up by a page-style step
-- `h`, `left`: move up by a page-style step
-- `l`, `right`: move down by a page-style step
-- `home`, `g g`: first page
-- `end`, `G`: last page
-- `r`: refresh the current PDF from disk
-- `m`: open PDF metadata
-- `b`: open PDF bookmarks
-- `s`: search embedded PDF text
-- `v`: open selection history
-- mouse left press: mark the first PDF selection corner
-- mouse left drag release: mark the opposite corner
-- `esc`: cancel an active selection anchor
-- `L s`: switch to the default scroll layout
-- `L g`: switch to the default grid layout
-- `:`: open command prompt
-- mouse wheel: move up or down
+| Keys | Action |
+| --- | --- |
+| `q`, `ctrl-c` | Quit |
+| `j`, `down`, mouse wheel down | Scroll down one row (one slice in scroll layouts, one page row in grids) |
+| `k`, `up`, mouse wheel up | Scroll up one row |
+| `l`, `right`, `pgdn` | Move down one screen |
+| `h`, `left`, `pgup` | Move up one screen |
+| `g g`, `home` | First page |
+| `G`, `end` | Last page |
+| `r` | Reload the PDF from disk |
+| `m` | Metadata view |
+| `b` | Bookmarks view |
+| `s` | Search view |
+| `v` | Selection view |
+| left click | Place a selection anchor (see [Selection](views.md#selection)) |
+| `esc` | Cancel the selection anchors |
+| `L s` | Switch to `scroll 1 3` and save it to `config.toml` |
+| `L g` | Switch to `grid 2 2` and save it to `config.toml` |
+| `F1` | Show key bindings |
+
+The `next_page` and `previous_page` actions (move the focus by one PDF page)
+have no default key.
 
 ## Metadata
 
-- `q`, `esc`: return to the viewer
-- `f1`: show metadata key bindings
-- `e`: edit PDF metadata in `$EDITOR`
-- `j`, `down`: scroll metadata down
-- `k`, `up`: scroll metadata up
-- `pgdn`: scroll metadata down by one viewport
-- `pgup`: scroll metadata up by one viewport
-- `ctrl-c`: quit
-- `:`: open command prompt
+| Keys | Action |
+| --- | --- |
+| `q`, `esc` | Back to the viewer |
+| `ctrl-c` | Quit |
+| `e` | Edit metadata in `$EDITOR` |
+| `j`, `down`, mouse wheel down | Scroll down one line |
+| `k`, `up`, mouse wheel up | Scroll up one line |
+| `pgdn`, `pgup` | Scroll one screen |
+| `F1` | Show key bindings |
 
 ## Bookmarks
 
-- `q`, `esc`: return to the viewer
-- `f1`: show bookmark key bindings
-- `e`: edit PDF bookmarks in `$EDITOR`
-- `j`, `down`: move to the next visible bookmark
-- `k`, `up`: move to the previous visible bookmark
-- `pgdn`: move down by one bookmark viewport
-- `pgup`: move up by one bookmark viewport
-- `space`: expand or collapse the hovered bookmark
-- `z`: expand all bookmarks, then collapse all bookmarks on the next press
-- `enter`: jump to the hovered bookmark
-- `h`, `left`: narrow the bookmark tree panel
-- `l`, `right`: widen the bookmark tree panel
-- `ctrl-c`: quit
-- `:`: open command prompt
+| Keys | Action |
+| --- | --- |
+| `q`, `esc` | Back to the viewer |
+| `ctrl-c` | Quit |
+| `j`, `down`, mouse wheel down | Next visible bookmark |
+| `k`, `up`, mouse wheel up | Previous visible bookmark |
+| `pgdn`, `pgup` | Move one screen of bookmarks |
+| `space` | Expand or collapse the selected bookmark |
+| `z` | Expand all bookmarks, or collapse all when everything is expanded |
+| `enter` | Jump to the selected bookmark |
+| left click | Select a bookmark; clicking the selected one expands or collapses it |
+| `h`, `left` / `l`, `right` | Narrow / widen the bookmark tree panel |
+| `e` | Edit bookmarks in `$EDITOR` |
+| `F1` | Show key bindings |
 
 ## Search
 
-- type in the top search box to search embedded PDF text
-- `esc`: return to the viewer
-- `f1`: show search key bindings
-- `tab`, `down`: move to the next search result
-- `shift-tab`, `up`: move to the previous search result
-- `pgdn`: move down by one result viewport
-- `pgup`: move up by one result viewport
-- `enter`: jump to the selected result
-- `ctrl-c`: quit
+Typing edits the query; results update as you type.
+
+| Keys | Action |
+| --- | --- |
+| `esc` | Back to the viewer |
+| `ctrl-c` | Quit |
+| `tab`, `down`, mouse wheel down | Next result |
+| `shift-tab`, `up`, mouse wheel up | Previous result |
+| `pgdn`, `pgup` | Move one screen of results |
+| `enter` | Jump to the selected result |
+| left click | Select a result; clicking the selected one jumps to it |
+| `left`, `right`, `home`, `end`, `ctrl-a`, `ctrl-e`, `backspace`, `delete`, `ctrl-u`, `ctrl-k` | Edit the query |
+| `F1` | Show key bindings |
 
 ## Selection
 
-- `q`, `esc`: return to the viewer
-- `f1`: show selection key bindings
-- `v`: commit a child selection draft, or prepare to create one
-- mouse left press: mark the first child-selection corner
-- mouse left drag release: mark the opposite child-selection corner
-- `j`, `down`, `pgdn`: move to the next session selection
-- `k`, `up`, `pgup`: move to the previous session selection
-- `y`: copy embedded text inside the selection
-- `Y`: copy a newly rendered PNG of the selection
-- mouse wheel: browse selection history
-- `ctrl-c`: quit
+| Keys | Action |
+| --- | --- |
+| `q` | Back to the viewer |
+| `esc` | Cancel the anchors of a new selection, otherwise back to the viewer |
+| `ctrl-c` | Quit |
+| `j`, `down`, `pgdn`, mouse wheel down | Next selection in the history |
+| `k`, `up`, `pgup`, mouse wheel up | Previous selection |
+| left click | Place an anchor of a new selection inside the shown one |
+| `v` | Commit the new selection and show it |
+| `y` | Copy the embedded text inside the selection |
+| `Y` | Copy the selection as a PNG |
+| `F1` | Show key bindings |
 
 ## Command Prompt
 
-- `tab`: select the next completion candidate
-- `shift-tab`: select the previous completion candidate
-- `enter`: insert the selected completion when available, otherwise run the command
-- `up`, `down`: browse command history for the current session
-- `left`, `right`, `home`, `end`: move the cursor
-- `ctrl-a`, `ctrl-e`: move to start or end
-- `ctrl-u`, `ctrl-k`: delete before or after cursor
-- `esc`: close the prompt
-- `f1`: show input key bindings
+| Keys | Action |
+| --- | --- |
+| `enter` | Accept the highlighted completion, or run the command |
+| `esc` | Close the prompt |
+| `tab`, `shift-tab` | Next / previous completion |
+| `up`, `down` | Previous / next command from this session's history |
+| `left`, `right`, `home`, `end`, `ctrl-a`, `ctrl-e` | Move the cursor |
+| `backspace`, `delete`, `ctrl-u`, `ctrl-k` | Delete before or at the cursor, before or after it |
+| `F1` | Show prompt key bindings |
 
-Prompt editing, completion selection, and command history are handled by
-`framework-tui`, matching the interaction model used by `gallery-tui`.
+## Dialogs
+
+- Confirmation of metadata or bookmark changes: `y` applies them; `enter`,
+  `n`, `q`, or `esc` cancels.
+- Key binding help: `F1`, `enter`, `esc`, or `q` closes it.
 
 ## Which-Key
 
-When a key sequence prefix is active, `pdf-tui` shows a which-key style hint
-area above the status line.
-
-Which-key layout and colors are configured in `theme.toml`.
+After the first key of a multi-key binding (such as `L` or `g`), the footer
+lists the keys that can follow. Its layout and colors are set in
+[`theme.toml`](theme.md).
