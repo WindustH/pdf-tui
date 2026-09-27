@@ -182,6 +182,9 @@ async fn tidy_cache(settings: &Settings) {
   }
 }
 
+/// Environment variable that forces the render modes, e.g. `sixel,symbols`.
+const RENDER_MODES_ENV: &str = "PDF_TUI_RENDER_MODES";
+
 /// Chafa arguments adjusted to the detected terminal, and the order in
 /// which render modes are tried.
 fn render_setup(
@@ -192,13 +195,14 @@ fn render_setup(
   if effective_render.auto_detect {
     effective_render.apply_terminal_capability(terminal_capability);
   }
-  let render_modes = if let Some(modes) = capability::render_modes_override_from_env() {
-    modes
-  } else if effective_render.auto_detect {
-    terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
-  } else {
-    vec![RenderMode::Symbols, RenderMode::Ascii]
-  };
+  let render_modes =
+    if let Some(modes) = capability::render_modes_override_from_env(RENDER_MODES_ENV) {
+      modes
+    } else if effective_render.auto_detect {
+      terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
+    } else {
+      vec![RenderMode::Symbols, RenderMode::Ascii]
+    };
   info!(
     modes = ?render_modes.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
     effective_render = ?effective_render,

@@ -30,7 +30,7 @@ sizes. Documents without pages cannot be opened.
 - If only terminal rendering fails, try the text fallback:
 
   ```sh
-  GALLERY_TUI_RENDER_MODES=symbols pdf-tui file.pdf
+  PDF_TUI_RENDER_MODES=symbols pdf-tui file.pdf
   ```
 
 ## Raw Escape Sequences Appear
@@ -39,8 +39,8 @@ The terminal or multiplexer does not support the detected graphics protocol.
 Force another mode order:
 
 ```sh
-GALLERY_TUI_RENDER_MODES=sixel,symbols pdf-tui file.pdf
-GALLERY_TUI_RENDER_MODES=symbols,ascii pdf-tui file.pdf
+PDF_TUI_RENDER_MODES=sixel,symbols pdf-tui file.pdf
+PDF_TUI_RENDER_MODES=symbols,ascii pdf-tui file.pdf
 ```
 
 or turn detection off, which uses only Chafa symbols and ASCII:
@@ -93,7 +93,7 @@ missing. Search only finds embedded text; scanned pages need OCR first.
 
 ## The Editor Does Not Open
 
-Metadata and bookmark editing run `$EDITOR`, then `$VISUAL`, then `vi`
+Metadata and bookmark editing run `$VISUAL`, then `$EDITOR`, then `vi`
 (`notepad` on Windows). On Unix the command runs through `sh`, so it may
 include arguments (for example `EDITOR="code --wait"`); the editor must not
 return before the file is saved.

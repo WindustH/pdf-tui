@@ -16,12 +16,13 @@ one is tried.
 
 ## Choosing Modes
 
-The `GALLERY_TUI_RENDER_MODES` environment variable overrides the detected
-order with a comma-separated list:
+The `PDF_TUI_RENDER_MODES` environment variable overrides the detected
+order with a comma-separated list (older versions read
+`GALLERY_TUI_RENDER_MODES`, which no longer affects pdf-tui):
 
 ```sh
-GALLERY_TUI_RENDER_MODES=kitty,sixel,symbols pdf-tui file.pdf
-GALLERY_TUI_RENDER_MODES=symbols pdf-tui file.pdf
+PDF_TUI_RENDER_MODES=kitty,sixel,symbols pdf-tui file.pdf
+PDF_TUI_RENDER_MODES=symbols pdf-tui file.pdf
 ```
 
 Accepted names are `kitty`, `sixel`, `iterm` (or `iterm2`), `symbols`, and

@@ -42,7 +42,7 @@ the features you need.
 | Symbol/ASCII graphics fallback | `chafa` | Required when no native terminal image protocol works |
 | Metadata view and editing | `exiftool` | Optional |
 | Bookmark view and editing | `pdftk` | Optional |
-| Metadata and bookmark editing | An editor named by `EDITOR` | Optional; see [Editor](#editor) |
+| Metadata and bookmark editing | An editor named by `VISUAL` or `EDITOR` | Optional; see [Editor](#editor) |
 
 Pdfium is the default backend and was the fastest backend in the project's
 existing Linux benchmark. It is therefore the recommended performance path.
@@ -219,7 +219,7 @@ or build described by the [Chafa project](https://github.com/hpjansson/chafa)
 and put `chafa.exe` in `PATH`. Chafa is needed before forcing fallback modes:
 
 ```powershell
-$env:GALLERY_TUI_RENDER_MODES = "symbols,ascii"
+$env:PDF_TUI_RENDER_MODES = "symbols,ascii"
 pdf-tui "C:\Users\me\Documents\example.pdf"
 ```
 
@@ -261,8 +261,8 @@ bookmarks are unavailable.
 
 ### Editor
 
-Metadata and bookmark editing start the program named by `EDITOR` (or
-`VISUAL`, falling back to `notepad`) with the draft file as its only argument.
+Metadata and bookmark editing start the program named by `VISUAL` (or
+`EDITOR`, falling back to `notepad`) with the draft file as its only argument.
 On Windows it is started directly, without a shell, so the variable must name an
 executable (`.exe`) found on `PATH` or by full path, without extra arguments:
 
@@ -311,7 +311,7 @@ Useful checks:
 Get-Command pdfinfo, pdftoppm, pdftotext
 Get-Command chafa, exiftool, pdftk, mutool -ErrorAction SilentlyContinue
 $env:PDF_TUI_PDFIUM_LIBRARY_PATH
-$env:GALLERY_TUI_RENDER_MODES
+$env:PDF_TUI_RENDER_MODES
 ```
 
 If rendering still fails, start with the Poppler backend and Chafa fallback.
