@@ -1,9 +1,10 @@
 use std::{
   collections::{HashMap, VecDeque},
   io::Cursor,
+  sync::Arc,
 };
 
-use img_tui::{ProtocolPlacement, RenderMode, native_image};
+use img_tui::{ProtocolImage, ProtocolPlacement, RenderMode, native_image};
 
 use crate::event::RenderedImage;
 
@@ -27,7 +28,7 @@ struct CompressedRenderedImage {
   refresh: Option<Vec<u8>>,
   placement: Option<ProtocolPlacement>,
   fingerprint: u64,
-  erase: Option<Vec<u8>>,
+  erase: Option<Arc<str>>,
 }
 
 #[derive(Debug)]
@@ -242,57 +243,37 @@ impl RenderedImageMemoryCache {
 
 impl CompressedRenderedImage {
   fn compress(image: &RenderedImage) -> Option<Self> {
-    let RenderedImage::Protocol {
-      mode,
-      data,
-      refresh,
-      placement,
-      fingerprint,
-      erase,
-    } = image
-    else {
+    let RenderedImage::Protocol(image) = image else {
       return None;
     };
     Some(Self {
-      mode: *mode,
-      data: compress_memory_bytes(data.as_bytes()).ok()?,
-      refresh: refresh
+      mode: image.mode,
+      data: compress_memory_bytes(image.data.as_bytes()).ok()?,
+      refresh: image
+        .refresh
         .as_ref()
         .map(|refresh| compress_memory_bytes(refresh.as_bytes()))
         .transpose()
         .ok()?,
-      placement: placement.clone(),
-      fingerprint: *fingerprint,
-      erase: erase
-        .as_ref()
-        .map(|erase| compress_memory_bytes(erase.as_bytes()))
-        .transpose()
-        .ok()?,
+      placement: image.placement,
+      fingerprint: image.fingerprint,
+      erase: image.erase.clone(),
     })
   }
 
   fn decompress(&self) -> Result<RenderedImage, String> {
-    Ok(RenderedImage::Protocol {
+    Ok(RenderedImage::Protocol(ProtocolImage {
       mode: self.mode,
-      data: String::from_utf8(decompress_memory_bytes(&self.data)?)
-        .map_err(|error| error.to_string())?,
+      data: decompress_memory_str(&self.data)?,
       refresh: self
         .refresh
         .as_ref()
-        .map(|refresh| {
-          String::from_utf8(decompress_memory_bytes(refresh)?).map_err(|error| error.to_string())
-        })
+        .map(|refresh| decompress_memory_str(refresh))
         .transpose()?,
-      placement: self.placement.clone(),
+      placement: self.placement,
       fingerprint: self.fingerprint,
-      erase: self
-        .erase
-        .as_ref()
-        .map(|erase| {
-          String::from_utf8(decompress_memory_bytes(erase)?).map_err(|error| error.to_string())
-        })
-        .transpose()?,
-    })
+      erase: self.erase.clone(),
+    }))
   }
 
   fn stored_bytes(&self) -> usize {
@@ -300,7 +281,7 @@ impl CompressedRenderedImage {
       .data
       .len()
       .saturating_add(self.refresh.as_ref().map_or(0, Vec::len))
-      .saturating_add(self.erase.as_ref().map_or(0, Vec::len))
+      .saturating_add(self.erase.as_ref().map_or(0, |erase| erase.len()))
       .saturating_add(256)
   }
 }
@@ -400,16 +381,7 @@ fn rendered_image_bytes(image: &RenderedImage) -> usize {
           .sum::<usize>()
       })
       .sum::<usize>(),
-    RenderedImage::Protocol {
-      data,
-      refresh,
-      erase,
-      ..
-    } => data
-      .len()
-      .saturating_add(refresh.as_ref().map_or(0, String::len))
-      .saturating_add(erase.as_ref().map_or(0, String::len))
-      .saturating_add(256),
+    RenderedImage::Protocol(image) => image.payload_len().saturating_add(256),
   }
 }
 
@@ -417,9 +389,12 @@ fn compress_memory_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
   zstd::stream::encode_all(Cursor::new(bytes), 1)
 }
 
-fn decompress_memory_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
-  zstd::stream::decode_all(Cursor::new(bytes))
-    .map_err(|error| format!("memory cache decompression failed: {error}"))
+fn decompress_memory_str(bytes: &[u8]) -> Result<Arc<str>, String> {
+  let bytes = zstd::stream::decode_all(Cursor::new(bytes))
+    .map_err(|error| format!("memory cache decompression failed: {error}"))?;
+  String::from_utf8(bytes)
+    .map(Arc::from)
+    .map_err(|error| error.to_string())
 }
 
 pub(super) fn prepared_image_estimated_bytes(
