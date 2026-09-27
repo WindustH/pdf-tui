@@ -24,13 +24,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use framework_tui::PanicOrigin;
 use img_tui::{NativeImageConfig, RenderMode, TerminalCapability, capability, native_image};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::{
   app::App,
-  background::InputGate,
   config::{RenderConfig, Settings},
   event::AsyncEvent,
   event_loop::Session,
@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
   let page_store = PageStore::new(document.clone(), settings.config.render.max_concurrent);
 
   let (tx, rx) = mpsc::unbounded_channel::<AsyncEvent>();
-  let input_gate = InputGate::spawn(tx.clone());
+  let input = background::spawn_input_reader(tx.clone())?;
   background::spawn_file_watcher(tx.clone(), document.path.clone(), &settings.config.behavior);
 
   let mut app = App::new(document, settings);
@@ -144,9 +144,19 @@ async fn main() -> Result<()> {
     ),
   };
 
-  terminal::install_panic_hook();
+  // Panics on worker threads are logged instead of printed, because
+  // stderr is the UI.
+  framework_tui::install_panic_hook(|info, origin| {
+    if origin == PanicOrigin::Background {
+      tracing::error!(
+        thread = std::thread::current().name().unwrap_or("unnamed"),
+        panic = %info,
+        "background thread panicked"
+      );
+    }
+  });
   let mut tui = Tui::new(protocol_reset)?;
-  let mut session = Session::new(app, pipeline, tx, rx, input_gate);
+  let mut session = Session::new(app, pipeline, tx, rx, input);
   let result = session.run(&mut tui).await;
   tui.restore()?;
   result?;

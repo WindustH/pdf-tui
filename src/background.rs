@@ -2,120 +2,32 @@
 //! optional file watcher behind automatic refresh.
 
 use std::{
-  fs,
+  fs, io,
   path::PathBuf,
-  sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-  },
   thread,
   time::{Duration, Instant, SystemTime},
 };
 
-use crossterm::event::{self as crossterm_event, Event, MouseEventKind};
+use crossterm::event::{Event, MouseEventKind};
+use framework_tui::InputReader;
 use tokio::sync::mpsc;
 
 use crate::{config::BehaviorConfig, event::AsyncEvent};
 
-const INPUT_POLL: Duration = Duration::from_millis(50);
-const PAUSE_WAIT_LIMIT: Duration = Duration::from_millis(300);
-
-/// Controls the terminal input thread. While paused (an external editor
-/// owns the terminal) the thread stops reading, so it cannot steal the
-/// editor's keystrokes; events read before a pause carry an older
-/// generation and are dropped by the event loop.
-pub struct InputGate {
-  shared: Arc<InputShared>,
-}
-
-struct InputShared {
-  enabled: AtomicBool,
-  /// Set by the input thread once it has noticed a pause and stopped
-  /// polling the terminal.
-  parked: AtomicBool,
-  generation: AtomicU64,
-}
-
-impl InputGate {
-  pub fn spawn(tx: mpsc::UnboundedSender<AsyncEvent>) -> Self {
-    let shared = Arc::new(InputShared {
-      enabled: AtomicBool::new(true),
-      parked: AtomicBool::new(false),
-      generation: AtomicU64::new(0),
-    });
-    let thread_shared = shared.clone();
-    thread::spawn(move || read_input(&thread_shared, &tx));
-    Self { shared }
-  }
-
-  pub fn generation(&self) -> u64 {
-    self.shared.generation.load(Ordering::SeqCst)
-  }
-
-  /// Stops input reading and waits (bounded) until the thread is idle.
-  pub fn pause(&self) {
-    self.shared.enabled.store(false, Ordering::SeqCst);
-    self.shared.generation.fetch_add(1, Ordering::SeqCst);
-    let started = Instant::now();
-    while !self.shared.parked.load(Ordering::SeqCst) && started.elapsed() < PAUSE_WAIT_LIMIT {
-      thread::sleep(Duration::from_millis(2));
+/// Forwards terminal input to the event loop. Pointer motion without a
+/// button changes nothing, so it is dropped here instead of waking the
+/// event loop for every mouse movement.
+pub fn spawn_input_reader(tx: mpsc::UnboundedSender<AsyncEvent>) -> io::Result<InputReader> {
+  InputReader::spawn(move |input| {
+    if matches!(&input.event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Moved) {
+      return true;
     }
-  }
-
-  pub fn resume(&self) {
-    self.shared.generation.fetch_add(1, Ordering::SeqCst);
-    self.shared.enabled.store(true, Ordering::SeqCst);
-  }
-}
-
-fn read_input(shared: &InputShared, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-  loop {
-    if !shared.enabled.load(Ordering::SeqCst) {
-      shared.parked.store(true, Ordering::SeqCst);
-      thread::sleep(Duration::from_millis(10));
-      continue;
-    }
-    shared.parked.store(false, Ordering::SeqCst);
-    // Re-check after announcing activity: a pause that saw `parked` still
-    // set must not race with a poll starting here.
-    if !shared.enabled.load(Ordering::SeqCst) {
-      continue;
-    }
-    // Poll with a timeout instead of blocking in `read`, so a pause takes
-    // effect without waiting for the next keystroke.
-    match crossterm_event::poll(INPUT_POLL) {
-      Ok(true) => {}
-      Ok(false) => continue,
-      Err(_) => {
-        thread::sleep(Duration::from_millis(10));
-        continue;
-      }
-    }
-    if !shared.enabled.load(Ordering::SeqCst) {
-      continue;
-    }
-    match crossterm_event::read() {
-      // Pointer motion without a button changes nothing; skip it early
-      // instead of waking the event loop for every mouse movement.
-      Ok(Event::Mouse(mouse)) if mouse.kind == MouseEventKind::Moved => {}
-      Ok(event) => {
-        let generation = shared.generation.load(Ordering::SeqCst);
-        if tx.send(AsyncEvent::Input { event, generation }).is_err() {
-          break;
-        }
-      }
-      Err(_) => thread::sleep(Duration::from_millis(10)),
-    }
-  }
-}
-
-/// Drops terminal events queued while an external program ran.
-pub fn discard_pending_terminal_events() {
-  while crossterm_event::poll(Duration::from_millis(0)).unwrap_or(false) {
-    if crossterm_event::read().is_err() {
-      break;
-    }
-  }
+    tx.send(AsyncEvent::Input {
+      event: input.event,
+      generation: input.generation,
+    })
+    .is_ok()
+  })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

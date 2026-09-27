@@ -2,13 +2,12 @@
 //! async events (input, finished renders, reloads, ...) to the app state.
 
 use anyhow::Result;
-use framework_tui::edit_text_in_editor;
+use framework_tui::{EditorOptions, InputReader, edit_text_outside_tui};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::{
   app::{App, EditorRequest, ViewMode},
-  background::{InputGate, discard_pending_terminal_events},
   event::{
     AsyncEvent, CacheClearOutcome, DocumentReload, PageOutcome, RenderOutcome, RenderedImage,
     SearchIndexOutcome, SelectionImageOutcome,
@@ -22,7 +21,7 @@ pub struct Session {
   pipeline: ImagePipeline,
   tx: mpsc::UnboundedSender<AsyncEvent>,
   rx: mpsc::UnboundedReceiver<AsyncEvent>,
-  input: InputGate,
+  input: InputReader,
 }
 
 impl Session {
@@ -31,7 +30,7 @@ impl Session {
     pipeline: ImagePipeline,
     tx: mpsc::UnboundedSender<AsyncEvent>,
     rx: mpsc::UnboundedReceiver<AsyncEvent>,
-    input: InputGate,
+    input: InputReader,
   ) -> Self {
     Self {
       app,
@@ -79,17 +78,14 @@ impl Session {
 
   /// Hands the terminal to `$EDITOR` and feeds the edited text back.
   fn run_editor(&mut self, tui: &mut Tui, request: EditorRequest) -> Result<()> {
-    self.input.pause();
-    let suspended = tui.suspend();
-    let result = suspended
-      .as_ref()
-      .map_err(ToString::to_string)
-      .and_then(|_| edit_text_in_editor(request.initial_text(), &self.app.settings.cache_dir));
-    let resumed = tui.resume();
-    if resumed.is_ok() {
-      discard_pending_terminal_events();
-    }
-    self.input.resume();
+    let handoff = edit_text_outside_tui(
+      tui,
+      Some(&self.input),
+      request.initial_text(),
+      &self.app.settings.cache_dir,
+      &EditorOptions::default(),
+    );
+    let result = handoff.output;
     match request {
       EditorRequest::Metadata { original, .. } => {
         self.app.finish_metadata_editor_input(original, result)
@@ -98,8 +94,7 @@ impl Session {
         self.app.finish_bookmarks_editor_input(original, result)
       }
     }
-    suspended?;
-    resumed
+    handoff.terminal
   }
 
   /// Applies one event; returns whether the screen needs a redraw.
@@ -162,8 +157,8 @@ impl Session {
   }
 
   fn on_input(&mut self, event: crossterm::event::Event, generation: u64) -> bool {
-    let current_generation = self.input.generation();
-    if generation != current_generation {
+    if !self.input.is_current(generation) {
+      let current_generation = self.input.generation();
       debug!(
         ?event,
         generation, current_generation, "input event ignored because generation is stale"

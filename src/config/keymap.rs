@@ -1,6 +1,7 @@
-use std::fmt::Write as FmtWrite;
-
-use framework_tui::{KeyBindingConfig, KeyBindings};
+use framework_tui::keymap::{
+  InputKeymapOptions, KeyBindingConfig, KeyBindings, KeymapSection, default_input_keymap,
+  format_keymap_sections, key,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,29 +12,8 @@ pub struct KeymapConfig {
   pub bookmarks: KeymapSection,
   pub search: KeymapSection,
   pub selection: KeymapSection,
-  #[serde(default = "default_input_keymap_section")]
   pub input: KeymapSection,
   pub global: KeymapSection,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct KeymapSection {
-  pub keymap: Vec<KeymapEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeymapEntry {
-  pub on: KeymapOn,
-  pub run: String,
-  pub desc: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum KeymapOn {
-  One(String),
-  Many(Vec<String>),
 }
 
 impl Default for KeymapConfig {
@@ -183,7 +163,11 @@ impl Default for KeymapConfig {
           key("Y", "selection_copy_image", "Copy selected image"),
         ],
       },
-      input: default_input_keymap_section(),
+      input: default_input_keymap(&InputKeymapOptions {
+        help: Some("Show input key bindings".to_string()),
+        help_after_cancel: true,
+        ..InputKeymapOptions::default()
+      }),
       global: KeymapSection {
         keymap: vec![key(":", "command", "Enter command")],
       },
@@ -194,186 +178,60 @@ impl Default for KeymapConfig {
 impl KeymapConfig {
   pub fn bindings(&self) -> KeyBindings {
     KeyBindings::from_sections(
-      binding_configs(&self.viewer.keymap),
-      binding_configs(&self.metadata.keymap),
-      binding_configs(&self.input.keymap),
-      binding_configs(&self.global.keymap),
+      self.viewer.binding_configs(),
+      self.metadata.binding_configs(),
+      self.input.binding_configs(),
+      self.global.binding_configs(),
     )
   }
 
   pub fn bookmarks_bindings(&self) -> KeyBindings {
     KeyBindings::from_sections(
-      binding_configs(&self.bookmarks.keymap),
+      self.bookmarks.binding_configs(),
       Vec::<KeyBindingConfig>::new(),
-      binding_configs(&self.input.keymap),
-      binding_configs(&self.global.keymap),
+      self.input.binding_configs(),
+      self.global.binding_configs(),
     )
   }
 
   pub fn search_bindings(&self) -> KeyBindings {
     KeyBindings::from_sections(
-      binding_configs(&self.search.keymap),
+      self.search.binding_configs(),
       Vec::<KeyBindingConfig>::new(),
-      binding_configs(&self.input.keymap),
+      self.input.binding_configs(),
       Vec::<KeyBindingConfig>::new(),
     )
   }
 
   pub fn selection_bindings(&self) -> KeyBindings {
     KeyBindings::from_sections(
-      binding_configs(&self.selection.keymap),
+      self.selection.binding_configs(),
       Vec::<KeyBindingConfig>::new(),
-      binding_configs(&self.input.keymap),
+      self.input.binding_configs(),
       Vec::<KeyBindingConfig>::new(),
     )
   }
 
   pub(super) fn normalize_defaults(&mut self) {
     let default = KeymapConfig::default();
-    append_missing_actions(&mut self.viewer.keymap, &default.viewer.keymap);
-    append_missing_actions(&mut self.metadata.keymap, &default.metadata.keymap);
-    append_missing_actions(&mut self.bookmarks.keymap, &default.bookmarks.keymap);
-    append_missing_actions(&mut self.search.keymap, &default.search.keymap);
-    append_missing_actions(&mut self.selection.keymap, &default.selection.keymap);
-    append_missing_actions(&mut self.input.keymap, &default.input.keymap);
-    append_missing_actions(&mut self.global.keymap, &default.global.keymap);
+    self.viewer.append_missing_actions(&default.viewer);
+    self.metadata.append_missing_actions(&default.metadata);
+    self.bookmarks.append_missing_actions(&default.bookmarks);
+    self.search.append_missing_actions(&default.search);
+    self.selection.append_missing_actions(&default.selection);
+    self.input.append_missing_actions(&default.input);
+    self.global.append_missing_actions(&default.global);
   }
 }
 
 pub(super) fn format_keymap_toml(config: &KeymapConfig) -> String {
-  let mut out = String::new();
-  push_keymap_section(&mut out, "viewer", &config.viewer);
-  push_keymap_section(&mut out, "metadata", &config.metadata);
-  push_keymap_section(&mut out, "bookmarks", &config.bookmarks);
-  push_keymap_section(&mut out, "search", &config.search);
-  push_keymap_section(&mut out, "selection", &config.selection);
-  push_keymap_section(&mut out, "input", &config.input);
-  push_keymap_section(&mut out, "global", &config.global);
-  out
-}
-
-fn binding_configs(entries: &[KeymapEntry]) -> Vec<KeyBindingConfig> {
-  entries
-    .iter()
-    .map(|entry| KeyBindingConfig {
-      on: keymap_on_values(&entry.on),
-      action: entry.run.clone(),
-      desc: entry.desc.clone(),
-    })
-    .collect()
-}
-
-fn keymap_on_values(on: &KeymapOn) -> Vec<String> {
-  match on {
-    KeymapOn::One(value) => vec![value.clone()],
-    KeymapOn::Many(values) => values.clone(),
-  }
-}
-
-fn append_missing_actions(entries: &mut Vec<KeymapEntry>, defaults: &[KeymapEntry]) {
-  for default in defaults {
-    if entries.iter().any(|entry| entry.run == default.run) {
-      continue;
-    }
-    entries.push(default.clone());
-  }
-}
-
-fn default_input_keymap_section() -> KeymapSection {
-  KeymapSection {
-    keymap: vec![
-      key("esc", "cancel", "Cancel input"),
-      key("f1", "help", "Show input key bindings"),
-      key("enter", "submit", "Submit input"),
-      key("backspace", "backspace", "Delete before cursor"),
-      key("delete", "delete", "Delete under cursor"),
-      key("left", "move_left", "Move cursor left"),
-      key("right", "move_right", "Move cursor right"),
-      key("home", "move_start", "Move cursor to start"),
-      key("ctrl-a", "move_start", "Move cursor to start"),
-      key("end", "move_end", "Move cursor to end"),
-      key("ctrl-e", "move_end", "Move cursor to end"),
-      key("ctrl-u", "kill_before_cursor", "Delete before cursor"),
-      key("ctrl-k", "kill_after_cursor", "Delete after cursor"),
-      key("tab", "completion_next", "Select next completion"),
-      key(
-        "backtab",
-        "completion_previous",
-        "Select previous completion",
-      ),
-      key("up", "history_previous", "Previous command history"),
-      key("down", "history_next", "Next command history"),
-    ],
-  }
-}
-
-fn key(on: impl Into<KeymapOn>, run: &str, desc: &str) -> KeymapEntry {
-  KeymapEntry {
-    on: on.into(),
-    run: run.to_string(),
-    desc: desc.to_string(),
-  }
-}
-
-impl From<&str> for KeymapOn {
-  fn from(value: &str) -> Self {
-    Self::One(value.to_string())
-  }
-}
-
-impl<const N: usize> From<[&str; N]> for KeymapOn {
-  fn from(value: [&str; N]) -> Self {
-    Self::Many(value.into_iter().map(str::to_string).collect())
-  }
-}
-
-fn push_keymap_section(out: &mut String, name: &str, section: &KeymapSection) {
-  let _ = writeln!(out, "[{name}]");
-  out.push_str("keymap = [\n");
-  for entry in &section.keymap {
-    let _ = writeln!(
-      out,
-      "  {{ on = {}, run = {}, desc = {} }},",
-      format_keymap_on(&entry.on),
-      toml_basic_string(&entry.run),
-      toml_basic_string(&entry.desc)
-    );
-  }
-  out.push_str("]\n\n");
-}
-
-fn format_keymap_on(on: &KeymapOn) -> String {
-  match on {
-    KeymapOn::One(value) => toml_basic_string(value),
-    KeymapOn::Many(values) => {
-      let keys = values
-        .iter()
-        .map(|value| toml_basic_string(value))
-        .collect::<Vec<_>>()
-        .join(", ");
-      format!("[{keys}]")
-    }
-  }
-}
-
-fn toml_basic_string(value: &str) -> String {
-  let mut out = String::with_capacity(value.len() + 2);
-  out.push('"');
-  for ch in value.chars() {
-    match ch {
-      '\\' => out.push_str("\\\\"),
-      '"' => out.push_str("\\\""),
-      '\n' => out.push_str("\\n"),
-      '\r' => out.push_str("\\r"),
-      '\t' => out.push_str("\\t"),
-      '\u{08}' => out.push_str("\\b"),
-      '\u{0c}' => out.push_str("\\f"),
-      ch if ch.is_control() => {
-        let _ = write!(out, "\\u{:04X}", ch as u32);
-      }
-      ch => out.push(ch),
-    }
-  }
-  out.push('"');
-  out
+  format_keymap_sections([
+    ("viewer", &config.viewer),
+    ("metadata", &config.metadata),
+    ("bookmarks", &config.bookmarks),
+    ("search", &config.search),
+    ("selection", &config.selection),
+    ("input", &config.input),
+    ("global", &config.global),
+  ])
 }
