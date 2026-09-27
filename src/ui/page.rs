@@ -1,9 +1,9 @@
 //! Drawing primitives shared by all views: page and slice images, pending
 //! and error placeholders, and page frames.
 
+use img_tui::{ProtocolOverlay, reserve_protocol_area};
 use ratatui::{
   Frame,
-  buffer::CellDiffOption,
   layout::{Alignment, Rect},
   style::Style,
   widgets::{Block, Borders, Paragraph, Wrap},
@@ -219,7 +219,7 @@ fn draw_rendered_image(
   frame: &mut Frame,
   area: Rect,
   rendered: &RenderedImage,
-  overlays: &mut Vec<img_tui::ProtocolOverlay>,
+  overlays: &mut Vec<ProtocolOverlay>,
 ) {
   match rendered {
     RenderedImage::Symbols { text, .. } => {
@@ -227,24 +227,9 @@ fn draw_rendered_image(
       // frame costs one allocation per span.
       frame.render_widget(text, area);
     }
-    RenderedImage::Protocol {
-      mode,
-      data,
-      refresh,
-      placement,
-      fingerprint,
-      erase,
-    } => {
+    RenderedImage::Protocol(image) => {
       reserve_protocol_area(frame, area);
-      overlays.push(img_tui::ProtocolOverlay {
-        area,
-        mode: *mode,
-        data: data.clone(),
-        refresh: refresh.clone(),
-        placement: placement.clone(),
-        fingerprint: *fingerprint,
-        erase: erase.clone(),
-      });
+      overlays.push(image.overlay(area));
     }
   }
 }
@@ -271,19 +256,6 @@ pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<Strin
       .wrap(Wrap { trim: true }),
     area,
   );
-}
-
-/// Marks protocol-image cells so the text diff never overwrites them.
-fn reserve_protocol_area(frame: &mut Frame, area: Rect) {
-  let area = area.intersection(frame.area());
-  let buf = frame.buffer_mut();
-  for y in area.top()..area.bottom() {
-    for x in area.left()..area.right() {
-      if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.set_diff_option(CellDiffOption::Skip);
-      }
-    }
-  }
 }
 
 #[cfg(test)]

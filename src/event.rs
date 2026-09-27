@@ -1,5 +1,5 @@
 use crossterm::event::Event;
-use img_tui::{ProtocolPlacement, RenderMode};
+use img_tui::ProtocolImage;
 use ratatui::text::Text;
 
 use crate::{
@@ -114,15 +114,6 @@ pub struct RenderOutcome {
 
 #[derive(Debug, Clone)]
 pub enum RenderedImage {
-  Symbols {
-    text: Text<'static>,
-  },
-  Protocol {
-    mode: RenderMode,
-    data: String,
-    refresh: Option<String>,
-    placement: Option<ProtocolPlacement>,
-    fingerprint: u64,
-    erase: Option<String>,
-  },
+  Symbols { text: Text<'static> },
+  Protocol(ProtocolImage),
 }

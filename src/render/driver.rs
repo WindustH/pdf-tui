@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use ansi_to_tui::IntoText;
-use img_tui::{NativeImageConfig, ProtocolPlacement, RenderMode, native_image};
+use img_tui::{
+  EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
+  native_image,
+};
 use ratatui::text::Text;
 use sha2::{Digest, Sha256};
 use tokio::fs;
@@ -12,7 +15,7 @@ use super::{
   PreparedImageCache, RenderKind, RenderedBytes,
   cache_file::{decode_cache_file, rewrite_cache_file, write_cache_file},
   chafa::run_chafa,
-  key::{kitty_image_id, kitty_placement_id, render_cache_key, render_fingerprint},
+  key::{kitty_image_id, kitty_placement_id, render_cache_key},
   memory::prepared_image_estimated_bytes,
 };
 
@@ -130,7 +133,8 @@ async fn render_or_read_cache(
   )
   .await;
 
-  decode_rendered(bytes, mode, native_config, image_id, placement_id)
+  let spec = protocol_spec(mode, width, height, image_id, placement_id);
+  decode_rendered(bytes, &spec, native_config)
 }
 
 #[derive(Clone, Copy)]
@@ -175,12 +179,17 @@ async fn read_render_cache(
     .await;
   }
   cache::touch_cache_entry(request.cache_path).await;
-  Some(decode_rendered(
-    decoded.payload,
+  let spec = protocol_spec(
     request.mode,
-    request.native_config,
+    request.width,
+    request.height,
     decoded.image_id,
     decoded.placement_id,
+  );
+  Some(decode_rendered(
+    decoded.payload,
+    &spec,
+    request.native_config,
   ))
 }
 
@@ -201,54 +210,14 @@ async fn render_bytes(
   if mode.is_protocol() {
     let prepared =
       prepared_native_image(page, width, height, kind, native_config, prepared_images).await?;
-    if mode == RenderMode::Kitty && native_config.kitty_unicode_placeholders {
-      let image_id = image_id.unwrap_or(1);
-      let upload = native_image::render_prepared_kitty_upload(&prepared, native_config, image_id)
-        .await
-        .map_err(|error| error.to_string())?;
-      let virtual_placement =
-        native_image::render_kitty_virtual_placement(native_config, image_id, width, height);
-      let mut data = upload.data;
-      data.extend_from_slice(&virtual_placement);
-      Ok(RenderedBytes {
-        data,
-        refresh: Some(virtual_placement),
+    let spec = protocol_spec(mode, width, height, image_id, placement_id);
+    native_image::encode_protocol(&prepared, &spec, native_config)
+      .await
+      .map(|encoded| RenderedBytes {
+        data: encoded.data,
+        refresh: encoded.refresh,
       })
-    } else if mode == RenderMode::Kitty
-      && let Some(placement_id) = placement_id
-    {
-      let viewport = native_image::NativeImageViewport {
-        full_width_cells: width,
-        full_height_cells: height,
-        visible_width_cells: width,
-        visible_height_cells: height,
-        left_cells: 0,
-        top_cells: 0,
-      };
-      let image_id = image_id.unwrap_or(1);
-      let upload = native_image::render_prepared_kitty_upload(&prepared, native_config, image_id)
-        .await
-        .map_err(|error| error.to_string())?;
-      let refresh = native_image::render_kitty_viewport_from_upload(
-        &upload,
-        viewport,
-        native_config,
-        placement_id,
-      )
-      .map_err(|error| error.to_string())?;
-      Ok(RenderedBytes {
-        data: upload.data,
-        refresh: Some(refresh),
-      })
-    } else {
-      native_image::render_prepared(&prepared, mode, native_config, image_id)
-        .await
-        .map(|data| RenderedBytes {
-          data,
-          refresh: None,
-        })
-        .map_err(|error| error.to_string())
-    }
+      .map_err(|error| error.to_string())
   } else {
     run_chafa(&source_path, width, height, config, mode)
       .await
@@ -319,67 +288,34 @@ async fn prepared_native_image(
   Ok(prepared)
 }
 
-fn decode_rendered(
-  bytes: RenderedBytes,
+/// How a render is encoded (protocol modes) and read back.
+fn protocol_spec(
   mode: RenderMode,
-  native_config: &NativeImageConfig,
+  width: u16,
+  height: u16,
   image_id: Option<u32>,
   placement_id: Option<u32>,
-) -> Result<RenderedImage, String> {
-  decode_rendered_with_refresh(bytes, mode, native_config, image_id, placement_id)
+) -> ProtocolImageSpec {
+  ProtocolImageSpec {
+    image_id,
+    placement_id,
+    ..ProtocolImageSpec::new(mode, width, height)
+  }
 }
 
-fn decode_rendered_with_refresh(
+fn decode_rendered(
   bytes: RenderedBytes,
-  mode: RenderMode,
+  spec: &ProtocolImageSpec,
   native_config: &NativeImageConfig,
-  image_id: Option<u32>,
-  placement_id: Option<u32>,
 ) -> Result<RenderedImage, String> {
-  if mode.is_protocol() {
-    let fingerprint = render_fingerprint(&bytes.data);
-    let data = String::from_utf8(bytes.data).map_err(|error| error.to_string())?;
-    let refresh = bytes
-      .refresh
-      .map(String::from_utf8)
-      .transpose()
-      .map_err(|error| error.to_string())?;
-    let placement = match (
-      mode,
-      native_config.kitty_unicode_placeholders,
-      image_id,
-      placement_id,
-    ) {
-      (RenderMode::Kitty, _, Some(image_id), Some(placement_id)) => {
-        Some(ProtocolPlacement::KittyPlacement {
-          image_id,
-          placement_id,
-        })
-      }
-      (RenderMode::Kitty, true, Some(image_id), None) => {
-        Some(ProtocolPlacement::KittyUnicode { image_id })
-      }
-      _ => None,
+  if spec.mode.is_protocol() {
+    let encoded = EncodedProtocolImage {
+      data: bytes.data,
+      refresh: bytes.refresh,
     };
-    let erase = if mode == RenderMode::Kitty
-      && let (Some(image_id), Some(placement_id)) = (image_id, placement_id)
-    {
-      native_image::erase_kitty_placement_sequence(
-        native_config.passthrough.as_deref(),
-        image_id,
-        placement_id,
-      )
-    } else {
-      native_image::erase_sequence(mode, native_config.passthrough.as_deref(), image_id)
-    };
-    Ok(RenderedImage::Protocol {
-      mode,
-      data,
-      refresh,
-      placement,
-      fingerprint,
-      erase,
-    })
+    ProtocolImage::from_encoded(encoded, spec, native_config)
+      .map(RenderedImage::Protocol)
+      .map_err(|error| error.to_string())
   } else {
     let text: Text<'static> = bytes.data.into_text().map_err(|error| error.to_string())?;
     Ok(RenderedImage::Symbols { text })

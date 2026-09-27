@@ -108,10 +108,3 @@ pub(super) fn kitty_placement_id(
   let placement_id = u32::from_le_bytes(digest[..4].try_into().unwrap_or_default()) & 0x7fff_ffff;
   Some(placement_id.max(1))
 }
-
-pub(super) fn render_fingerprint(bytes: &[u8]) -> u64 {
-  let mut hasher = Sha256::new();
-  hasher.update(bytes);
-  let digest = hasher.finalize();
-  u64::from_le_bytes(digest[..8].try_into().unwrap_or_default())
-}
