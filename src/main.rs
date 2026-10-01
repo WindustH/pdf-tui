@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
   info!(
     input = %input.display(),
     cache_dir = %settings.cache_dir.display(),
+    state_dir = %settings.state_dir.display(),
     config_path = %settings.config_path.display(),
     log_path = %log_path.display(),
     "pdf-tui starting"
@@ -95,10 +96,11 @@ async fn main() -> Result<()> {
     dpi = document.dpi,
     "opened pdf document"
   );
+  progress_store::migrate_from_cache_dir(&settings.cache_dir, &settings.state_dir);
   let remember_position = settings.config.behavior.remember_reading_position;
   let saved_progress = if remember_position && document.modified_nanos > 0 {
     progress_store::load_matching(
-      &settings.cache_dir,
+      &settings.state_dir,
       &document.path,
       document.size_bytes,
       document.modified_nanos,
@@ -228,7 +230,7 @@ fn save_reading_position(app: &App) {
     document.modified_nanos,
     document.page_count,
   );
-  if let Err(error) = progress_store::upsert(&app.settings.cache_dir, entry) {
+  if let Err(error) = progress_store::upsert(&app.settings.state_dir, entry) {
     warn!(%error, "could not persist reading progress");
   }
 }

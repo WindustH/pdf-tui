@@ -30,6 +30,9 @@ pub struct Settings {
   pub theme: ThemeConfig,
   pub config_path: PathBuf,
   pub cache_dir: PathBuf,
+  /// Data that must survive cache cleanup (remembered reading positions).
+  /// Created on first write.
+  pub state_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -51,6 +54,7 @@ impl AppConfig {
 pub async fn load_or_create() -> Result<Settings> {
   let config_dir = app_config_dir();
   let cache_dir = app_cache_dir();
+  let state_dir = app_state_dir();
 
   fs::create_dir_all(&config_dir)
     .await
@@ -71,6 +75,7 @@ pub async fn load_or_create() -> Result<Settings> {
     theme,
     config_path,
     cache_dir,
+    state_dir,
   })
 }
 
@@ -80,6 +85,10 @@ fn app_config_dir() -> PathBuf {
 
 fn app_cache_dir() -> PathBuf {
   platform_cache_dir().join("pdf-tui")
+}
+
+fn app_state_dir() -> PathBuf {
+  platform_state_dir().join("pdf-tui")
 }
 
 fn platform_config_dir() -> PathBuf {
@@ -94,6 +103,13 @@ fn platform_cache_dir() -> PathBuf {
     .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
     .or_else(|| windows_app_data("LOCALAPPDATA"))
     .unwrap_or_else(|| PathBuf::from(".cache"))
+}
+
+fn platform_state_dir() -> PathBuf {
+  env_path("XDG_STATE_HOME")
+    .or_else(|| env_path("HOME").map(|home| home.join(".local/state")))
+    .or_else(|| windows_app_data("APPDATA"))
+    .unwrap_or_else(|| PathBuf::from(".local/state"))
 }
 
 /// Native Windows sets no `HOME` by default. Fall back to the standard

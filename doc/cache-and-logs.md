@@ -13,13 +13,22 @@ variable it is `%LOCALAPPDATA%\pdf-tui`.
 | `text/` | Search indexes (`*.toml.zst`) |
 | `search-highlight/` | Pages with a search match inverted |
 | `selection/` | Selection crops and pages with selection marks |
-| `progress.toml` | Remembered reading positions (`behavior.remember_reading_position`) |
 | `logs/` | Run logs |
 | `runtime/` | One lock file per running instance |
 | `editor/`, `bookmarks/` | Temporary files while editing metadata or bookmarks |
 
 Backends write their output to `pdf-tui/pages/` in the system temporary
 directory first (usually `/tmp`) and move finished files into the cache.
+
+## Reading Positions
+
+Remembered reading positions (`behavior.remember_reading_position`) are not
+cache data, so they live in `progress.toml` in the state directory:
+`$XDG_STATE_HOME/pdf-tui`, or `$HOME/.local/state/pdf-tui` when
+`XDG_STATE_HOME` is unset (also on macOS); on Windows without either variable
+it is `%APPDATA%\pdf-tui`. Deleting the cache directory keeps them. Older
+versions kept `progress.toml` in the cache directory; it is moved to the state
+directory on the next start.
 
 ## Limits And Cleanup
 
