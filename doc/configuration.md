@@ -164,9 +164,11 @@ With `auto_refresh`, a change to the file (size or modification time) is
 noticed within one poll interval and triggers a reload, at most once per
 `auto_refresh_min_interval_ms`; the reading position is kept.
 
-`remember_reading_position` stores positions in `progress.toml` in the cache
-directory when `pdf-tui` exits, keyed by the file's path, size, and
-modification time: a PDF changed by another program opens at the start, while
-changes seen during the session (refresh, metadata or bookmark edits) are
-remembered. `--progress` takes precedence, and `:clear-cache` keeps the
-positions. The 100 most recently closed documents are kept.
+`remember_reading_position` stores positions in `progress.toml` in the state
+directory (`$XDG_STATE_HOME/pdf-tui`, or `~/.local/state/pdf-tui`; see
+[Cache And Logs](cache-and-logs.md#reading-positions)) when `pdf-tui` exits,
+keyed by the file's path, size, and modification time: a PDF changed by
+another program opens at the start, while changes seen during the session
+(refresh, metadata or bookmark edits) are remembered. `--progress` takes
+precedence. Clearing the cache never loses positions. The 100 most recently
+closed documents are kept.

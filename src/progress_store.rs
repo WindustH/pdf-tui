@@ -1,8 +1,8 @@
 //! Persistent per-document reading progress, stored as
-//! `<cache_dir>/progress.toml`. Entries are keyed by document identity
+//! `<state_dir>/progress.toml`. Entries are keyed by document identity
 //! (path, size, mtime) so edits to a PDF invalidate the saved position
-//! instead of restoring a stale one. The store lives at the cache dir
-//! root, outside the subdirectories wiped by `clear-cache`.
+//! instead of restoring a stale one. The store lives in the state dir, not
+//! the cache, so clearing the cache never loses reading positions.
 
 use std::{
   fs,
@@ -57,19 +57,44 @@ struct ProgressFile {
   documents: Vec<ProgressEntry>,
 }
 
-pub fn progress_file_path(cache_dir: &Path) -> PathBuf {
-  cache_dir.join("progress.toml")
+const FILE_NAME: &str = "progress.toml";
+
+pub fn progress_file_path(state_dir: &Path) -> PathBuf {
+  state_dir.join(FILE_NAME)
+}
+
+/// The store used to live in the cache dir. Move it to the state dir unless
+/// the state dir already has one; copy-then-remove also works across file
+/// systems.
+pub fn migrate_from_cache_dir(cache_dir: &Path, state_dir: &Path) {
+  let from = cache_dir.join(FILE_NAME);
+  let to = progress_file_path(state_dir);
+  if !from.is_file() || to.exists() {
+    return;
+  }
+  let moved = fs::create_dir_all(state_dir).and_then(|()| fs::copy(&from, &to));
+  match moved {
+    Ok(_) => {
+      let _ = fs::remove_file(&from);
+    }
+    Err(error) => warn!(
+      from = %from.display(),
+      to = %to.display(),
+      %error,
+      "could not move the progress store out of the cache"
+    ),
+  }
 }
 
 /// Saved progress for a document identity, or `None` when nothing matches
 /// (never opened, or the file changed since the entry was written).
 pub fn load_matching(
-  cache_dir: &Path,
+  state_dir: &Path,
   path: &Path,
   size_bytes: u64,
   modified_nanos: u128,
 ) -> Option<f64> {
-  let file = load(cache_dir);
+  let file = load(state_dir);
   let entry = file.documents.iter().find(|entry| {
     entry.path == path.to_string_lossy()
       && entry.size_bytes == size_bytes
@@ -79,11 +104,11 @@ pub fn load_matching(
 }
 
 /// Replaces the entry for `entry.path`. The read-modify-write runs under a
-/// cache lock so two instances closing at once keep both updates.
-pub fn upsert(cache_dir: &Path, entry: ProgressEntry) -> Result<()> {
-  let path = progress_file_path(cache_dir);
+/// file lock so two instances closing at once keep both updates.
+pub fn upsert(state_dir: &Path, entry: ProgressEntry) -> Result<()> {
+  let path = progress_file_path(state_dir);
   let _lock = crate::cache::acquire_cache_file_lock_sync(&path)?;
-  let mut file = load(cache_dir);
+  let mut file = load(state_dir);
   file
     .documents
     .retain(|existing| existing.path != entry.path);
@@ -98,8 +123,8 @@ pub fn upsert(cache_dir: &Path, entry: ProgressEntry) -> Result<()> {
   crate::cache::write_bytes_atomic_sync(&path, encoded.as_bytes())
 }
 
-fn load(cache_dir: &Path) -> ProgressFile {
-  let path = progress_file_path(cache_dir);
+fn load(state_dir: &Path) -> ProgressFile {
+  let path = progress_file_path(state_dir);
   match fs::read_to_string(&path) {
     Ok(raw) => toml::from_str(&raw).unwrap_or_else(|error| {
       warn!(path = %path.display(), %error, "ignoring unreadable progress store");
@@ -180,5 +205,34 @@ mod tests {
         .any(|entry| entry.path == "/doc-000.pdf")
     );
     let _ = fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn migration_moves_the_cache_store_without_overwriting() {
+    let root = tmp_dir("migrate");
+    let (cache, state) = (root.join("cache"), root.join("state"));
+    fs::create_dir_all(&cache).unwrap();
+
+    // Nothing to move: no store appears.
+    migrate_from_cache_dir(&cache, &state);
+    assert!(!progress_file_path(&state).exists());
+
+    // An old store moves into a state dir that doesn't exist yet.
+    upsert(&cache, entry("/a.pdf", 3.5, 100)).unwrap();
+    migrate_from_cache_dir(&cache, &state);
+    assert!(!progress_file_path(&cache).exists());
+    assert_eq!(
+      load_matching(&state, Path::new("/a.pdf"), 10, 111),
+      Some(3.5)
+    );
+
+    // A leftover cache store never replaces newer state.
+    upsert(&cache, entry("/a.pdf", 9.0, 300)).unwrap();
+    migrate_from_cache_dir(&cache, &state);
+    assert_eq!(
+      load_matching(&state, Path::new("/a.pdf"), 10, 111),
+      Some(3.5)
+    );
+    let _ = fs::remove_dir_all(&root);
   }
 }

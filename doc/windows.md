@@ -97,15 +97,18 @@ Without further setup, `pdf-tui` uses:
 - `%APPDATA%\pdf-tui\` for `config.toml`, `keymap.toml`, and `theme.toml`
 - `%LOCALAPPDATA%\pdf-tui\` for page, render, search, selection, and log
   files
+- `%APPDATA%\pdf-tui\progress.toml` for remembered reading positions
 
-`XDG_CONFIG_HOME` and `XDG_CACHE_HOME` take precedence when set. When `HOME`
-is set, as in Git Bash or MSYS2 shells, `%HOME%\.config\pdf-tui` and
-`%HOME%\.cache\pdf-tui` are used instead of the application data folders. To
-keep one location regardless of the shell, set the XDG variables:
+`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` take precedence when
+set. When `HOME` is set, as in Git Bash or MSYS2 shells, `%HOME%\.config\pdf-tui`,
+`%HOME%\.cache\pdf-tui`, and `%HOME%\.local\state\pdf-tui` are used instead
+of the application data folders. To keep one location regardless of the
+shell, set the XDG variables:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("XDG_CONFIG_HOME", $env:APPDATA, "User")
 [Environment]::SetEnvironmentVariable("XDG_CACHE_HOME", $env:LOCALAPPDATA, "User")
+[Environment]::SetEnvironmentVariable("XDG_STATE_HOME", $env:APPDATA, "User")
 ```
 
 Restart the terminal after setting persistent environment variables.
