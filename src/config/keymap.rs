@@ -21,6 +21,11 @@ impl Default for KeymapConfig {
     Self {
       viewer: KeymapSection {
         keymap: vec![
+          key(
+            [",", "p"],
+            "layout slides 1 5",
+            "Use slides layout with 1:5 panels",
+          ),
           key("q", "quit", "Quit pdf-tui"),
           key("ctrl-c", "quit", "Quit pdf-tui"),
           key("esc", "selection_cancel", "Cancel selection anchor"),

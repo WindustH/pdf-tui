@@ -9,6 +9,7 @@ bookmarks views.
 
 | Keys | Action |
 | --- | --- |
+| `, p` | Switch to `slides 1 5` and save it to `config.toml` |
 | `q`, `ctrl-c` | Quit |
 | `j`, `down`, mouse wheel down | Scroll down one row (one slice in scroll layouts, one page row in grids) |
 | `k`, `up`, mouse wheel up | Scroll up one row |

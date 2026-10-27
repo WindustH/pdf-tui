@@ -46,6 +46,8 @@ impl Default for LayoutConfig {
 pub struct LayoutPresetConfig {
   #[serde(default = "default_layout_strategy")]
   pub strategy: String,
+  pub left_ratio: u16,
+  pub right_ratio: u16,
   pub params: Vec<String>,
   pub columns: u16,
   pub rows: u16,
@@ -57,6 +59,18 @@ pub struct LayoutPresetConfig {
 }
 
 impl LayoutPresetConfig {
+  fn slides() -> Self {
+    Self {
+      strategy: "slides".to_string(),
+      params: vec!["left_ratio".to_string(), "right_ratio".to_string()],
+      columns: 1,
+      rows: 1,
+      show_border: Some(false),
+      padding: Some(0),
+      ..Self::default()
+    }
+  }
+
   fn scroll() -> Self {
     Self {
       strategy: "scroll".to_string(),
@@ -88,6 +102,8 @@ impl Default for LayoutPresetConfig {
   fn default() -> Self {
     Self {
       strategy: default_layout_strategy(),
+      left_ratio: 1,
+      right_ratio: 3,
       params: Vec::new(),
       columns: 0,
       rows: 0,
@@ -104,6 +120,8 @@ impl Default for LayoutPresetConfig {
 pub struct EffectiveLayoutConfig {
   pub name: String,
   pub strategy: String,
+  pub left_ratio: u16,
+  pub right_ratio: u16,
   pub columns: u16,
   pub rows: u16,
   pub scroll_divisor: u16,
@@ -116,6 +134,7 @@ pub struct EffectiveLayoutConfig {
 impl EffectiveLayoutConfig {
   pub fn label(&self) -> String {
     match self.strategy.as_str() {
+      "slides" => format!("{} {}:{}", self.name, self.left_ratio, self.right_ratio),
       "scroll" => format!(
         "{} {} {}",
         self.name,
@@ -191,6 +210,8 @@ impl LayoutConfig {
     let mut effective = EffectiveLayoutConfig {
       name: name.to_string(),
       strategy: normalize_layout_strategy(&preset.strategy),
+      left_ratio: preset.left_ratio,
+      right_ratio: preset.right_ratio,
       columns: preset.columns,
       rows: preset.rows,
       scroll_divisor: preset.scroll_divisor,
@@ -234,6 +255,8 @@ fn default_effective_layout(config: &LayoutConfig) -> EffectiveLayoutConfig {
   let mut effective = EffectiveLayoutConfig {
     name: "scroll".to_string(),
     strategy: fallback.strategy,
+    left_ratio: fallback.left_ratio,
+    right_ratio: fallback.right_ratio,
     columns: fallback.columns,
     rows: fallback.rows,
     scroll_divisor: fallback.scroll_divisor,
@@ -291,6 +314,12 @@ fn normalize_layout_strategy(strategy: &str) -> String {
 
 fn normalize_effective_layout(layout: &mut EffectiveLayoutConfig) {
   layout.strategy = normalize_layout_strategy(&layout.strategy);
+  layout.left_ratio = layout.left_ratio.max(1);
+  layout.right_ratio = layout.right_ratio.max(1);
+  if layout.strategy == "slides" {
+    layout.columns = 1;
+    layout.rows = 1;
+  }
   layout.columns = layout.columns.clamp(1, MAX_LAYOUT_COUNT);
   layout.rows = layout.rows.clamp(1, MAX_LAYOUT_COUNT);
   layout.scroll_divisor = layout.scroll_divisor.clamp(1, MAX_LAYOUT_COUNT);
@@ -305,6 +334,8 @@ fn apply_layout_param(
   value: &str,
 ) -> Result<(), String> {
   match param.trim().to_ascii_lowercase().as_str() {
+    "left_ratio" | "left-ratio" => layout.left_ratio = parse_layout_ratio(param, value)?,
+    "right_ratio" | "right-ratio" => layout.right_ratio = parse_layout_ratio(param, value)?,
     "columns" | "column" | "cols" => layout.columns = parse_layout_count(param, value)?,
     "rows" | "row" => layout.rows = parse_layout_count(param, value)?,
     "scroll_divisor" | "scroll-divisor" | "divisor" | "step" | "chunk" => {
@@ -396,6 +427,7 @@ fn default_layout_strategy() -> String {
 
 fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
   let mut presets = BTreeMap::new();
+  presets.insert("slides".to_string(), LayoutPresetConfig::slides());
   presets.insert("scroll".to_string(), LayoutPresetConfig::scroll());
   presets.insert("grid".to_string(), LayoutPresetConfig::grid());
   presets
@@ -422,5 +454,43 @@ mod tests {
     preset.columns = 0;
     let layout = config.set_active_from_args("grid", &[]).unwrap();
     assert_eq!((layout.rows, layout.columns), (MAX_LAYOUT_COUNT, 1));
+  }
+}
+
+fn parse_layout_ratio(param: &str, value: &str) -> Result<u16, String> {
+  let ratio = parse_layout_u16(param, value)?;
+  if ratio == 0 {
+    return Err(format!("{param} must be greater than zero"));
+  }
+  Ok(ratio)
+}
+
+#[cfg(test)]
+mod slides_tests {
+  use super::*;
+
+  #[test]
+  fn slides_ratios_and_invalid_arguments() {
+    let mut config = LayoutConfig::default();
+    let defaults = config.set_active_from_args("slides", &[]).unwrap();
+    assert_eq!((defaults.left_ratio, defaults.right_ratio), (1, 3));
+    assert!(!defaults.show_border);
+    let custom = config.set_active_from_args("slides", &["2", "5"]).unwrap();
+    assert_eq!((custom.left_ratio, custom.right_ratio), (2, 5));
+    assert_eq!((custom.columns, custom.rows), (1, 1));
+    for args in [
+      vec!["0", "3"],
+      vec!["1", "0"],
+      vec!["-1"],
+      vec!["1.5"],
+      vec!["65536"],
+      vec!["1", "2", "3"],
+    ] {
+      assert!(config.set_active_from_args("slides", &args).is_err());
+      assert_eq!(config.effective(), custom);
+    }
+    let saved = toml::to_string(&config).unwrap();
+    let restored: LayoutConfig = toml::from_str(&saved).unwrap();
+    assert_eq!(restored.effective(), custom);
   }
 }

@@ -233,9 +233,17 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "layout.show_border" => Some("Draw borders around rendered pages by default."),
     "layout.padding" => Some("Default inner padding around rendered pages."),
     "layout.presets.*" => Some("Named layout preset used by the :layout command."),
-    "layout.presets.*.strategy" => Some("Layout algorithm used by this preset: scroll or grid."),
+    "layout.presets.*.strategy" => {
+      Some("Layout algorithm used by this preset: scroll, grid, or slides.")
+    }
     "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
     "layout.presets.*.columns" => Some("Default number of page columns."),
+    "layout.presets.*.left_ratio" => {
+      Some("Left thumbnail panel width weight for slides (positive integer).")
+    }
+    "layout.presets.*.right_ratio" => {
+      Some("Right preview panel width weight for slides (positive integer).")
+    }
     "layout.presets.*.rows" => Some("Default number of page rows for grid layouts."),
     "layout.presets.*.scroll_divisor" => {
       Some("Scroll step divisor for continuous scrolling layouts.")

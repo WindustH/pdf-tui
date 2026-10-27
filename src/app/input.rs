@@ -93,6 +93,15 @@ impl App {
         self.handle_key_token(token, tx);
       }
       Event::Mouse(mouse) => match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left)
+          if self.view == ViewMode::Viewer
+            && self.layout.strategy == "slides"
+            && self.slide_thumbnail_at(mouse.column, mouse.row).is_some() =>
+        {
+          if let Some(page) = self.slide_thumbnail_at(mouse.column, mouse.row) {
+            self.handle_frame_navigation(|app| app.jump_to_page(page));
+          }
+        }
         MouseEventKind::Down(MouseButton::Left) if self.view == ViewMode::Bookmarks => {
           self.handle_bookmarks_mouse_click(mouse)
         }
@@ -140,6 +149,20 @@ impl App {
       _ => {}
     }
     force_redraw || before != self.input_redraw_state()
+  }
+
+  fn slide_thumbnail_at(&self, column: u16, row: u16) -> Option<usize> {
+    crate::layout::slide_thumbnails(
+      self.viewport?,
+      &self.layout,
+      self.grid_start_page,
+      self.document.page_count,
+      |index| self.page_dimensions(index),
+      self.terminal_cell_pixels,
+    )
+    .into_iter()
+    .find(|(_, area)| crate::geometry::contains(*area, column, row))
+    .map(|(page, _)| page)
   }
 
   /// A click selects a bookmark; clicking the selected one toggles it.

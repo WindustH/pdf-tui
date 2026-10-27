@@ -416,6 +416,9 @@ pub fn page_height_cells(
 
 /// Slot rectangles of a grid layout, row by row.
 pub fn grid_slots(area: Rect, config: &EffectiveLayoutConfig) -> Vec<Rect> {
+  if config.strategy == "slides" {
+    return vec![slides_panels(area, config).1];
+  }
   let rows = config.rows.max(1) as usize;
   let columns = config.columns.max(1) as usize;
   let gap_x = config.gap_x;
@@ -473,6 +476,8 @@ mod tests {
     EffectiveLayoutConfig {
       name: "test".into(),
       strategy: "scroll".into(),
+      left_ratio: 1,
+      right_ratio: 3,
       columns,
       rows: 1,
       scroll_divisor: 1,
@@ -643,5 +648,163 @@ mod tests {
     assert_eq!(placed[2].area.y, top + 40);
     assert_eq!(placed[1].area.height, 20);
     assert_eq!(placed[0].area.x, 2 + placed[0].item.x);
+  }
+}
+
+/// Reserve a blank column (or the configured horizontal gap) between panels.
+pub fn slides_panels(area: Rect, config: &EffectiveLayoutConfig) -> (Rect, Rect) {
+  let gap = config.gap_x.max(1).min(area.width);
+  let available = Rect::new(area.x, area.y, area.width.saturating_sub(gap), area.height);
+  let (left, mut right) =
+    crate::geometry::split_panels(available, config.left_ratio, config.right_ratio);
+  right.x = right.x.saturating_add(gap);
+  (left, right)
+}
+
+/// Whole-page thumbnails in a single scrolling column, centered on the current page.
+/// Shared by drawing and mouse hit testing.
+pub fn slide_thumbnails(
+  area: Rect,
+  config: &EffectiveLayoutConfig,
+  focused: usize,
+  count: usize,
+  dimensions: impl Fn(usize) -> Option<(u32, u32)>,
+  cell_pixels: Option<(u16, u16)>,
+) -> Vec<(usize, Rect)> {
+  let (panel, _) = slides_panels(area, config);
+  if panel.width == 0 || panel.height == 0 || count == 0 {
+    return Vec::new();
+  }
+  let inset = config.padding.saturating_add(u16::from(config.show_border));
+  let height = |page| {
+    page_height_cells(
+      panel.width.saturating_sub(inset.saturating_mul(2)),
+      dimensions(page),
+      cell_pixels,
+    )
+    .saturating_add(inset.saturating_mul(2))
+    .saturating_add(u16::from(!config.show_border))
+    .min(panel.height)
+    .max(1)
+  };
+  let focused = focused.min(count - 1);
+  let mut start = focused;
+  let mut used = height(focused);
+  while start > 0 {
+    let next = used
+      .saturating_add(config.gap_y)
+      .saturating_add(height(start - 1));
+    let target_top = panel.height.saturating_sub(height(focused)) / 2;
+    if next > panel.height
+      || next.saturating_sub(height(focused)).abs_diff(target_top)
+        > used.saturating_sub(height(focused)).abs_diff(target_top)
+    {
+      break;
+    }
+    start -= 1;
+    used = next;
+  }
+  let mut end = focused + 1;
+  while end < count {
+    let next = used
+      .saturating_add(config.gap_y)
+      .saturating_add(height(end));
+    if next > panel.height {
+      break;
+    }
+    used = next;
+    end += 1;
+  }
+  while start > 0 {
+    let next = used
+      .saturating_add(config.gap_y)
+      .saturating_add(height(start - 1));
+    if next > panel.height {
+      break;
+    }
+    start -= 1;
+    used = next;
+  }
+  let before = (start..focused).fold(0_u16, |sum, page| {
+    sum
+      .saturating_add(height(page))
+      .saturating_add(config.gap_y)
+  });
+  let centered_top = panel.height.saturating_sub(height(focused)) / 2;
+  let offset = centered_top
+    .saturating_sub(before)
+    .min(panel.height.saturating_sub(used));
+  let mut y = panel.y.saturating_add(offset);
+  (start..end)
+    .map(|page| {
+      let slot = Rect::new(panel.x, y, panel.width, height(page));
+      y = y.saturating_add(slot.height).saturating_add(config.gap_y);
+      (page, slot)
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod slides_tests {
+  use super::*;
+  use crate::config::LayoutConfig;
+
+  #[test]
+  fn slides_have_a_gutter_and_center_the_current_thumbnail() {
+    let config = LayoutConfig::default()
+      .set_active_from_args("slides", &["1", "3"])
+      .unwrap();
+    let area = Rect::new(0, 0, 240, 47);
+    let (left, right) = slides_panels(area, &config);
+    assert!(right.x > left.right());
+    assert_eq!(right.right(), area.right());
+    let thumbnails = slide_thumbnails(area, &config, 15, 58, |_| Some((1600, 900)), Some((8, 20)));
+    let current = thumbnails.iter().find(|(page, _)| *page == 15).unwrap().1;
+    assert!(thumbnails.iter().any(|(page, _)| *page < 15));
+    assert!(thumbnails.iter().any(|(page, _)| *page > 15));
+    assert!((current.y + current.height / 2).abs_diff(area.height / 2) <= 1);
+  }
+
+  #[test]
+  fn slides_keep_focus_visible_and_panels_separate() {
+    let config = LayoutConfig::default()
+      .set_active_from_args("slides", &["1", "3"])
+      .unwrap();
+    let thumbnails = slide_thumbnails(
+      Rect::new(0, 0, 240, 40),
+      &config,
+      14,
+      58,
+      |_| Some((1600, 900)),
+      Some((8, 20)),
+    );
+    assert!(
+      thumbnails.len() >= 2,
+      "wide slides should show neighboring thumbnails"
+    );
+    assert!(thumbnails.iter().all(|(_, rect)| rect.height <= 15));
+    for (width, height) in [(120, 40), (1, 1), (0, 0), (20, 2)] {
+      let area = Rect::new(3, 2, width, height);
+      let preview = grid_slots(area, &config)[0];
+      for focused in [0, 1, 49, 99] {
+        let thumbnails = slide_thumbnails(
+          area,
+          &config,
+          focused,
+          100,
+          |_| Some((1600, 900)),
+          Some((8, 16)),
+        );
+        if !thumbnails.is_empty() {
+          assert!(thumbnails.iter().any(|(page, _)| *page == focused));
+        }
+        for (page, slot) in thumbnails {
+          assert!(page < 100);
+          assert!(slot.right() <= preview.x);
+          assert!(slot.bottom() <= area.bottom());
+        }
+      }
+    }
+    assert!(slide_thumbnails(Rect::new(0, 0, 120, 40), &config, 0, 0, |_| None, None).is_empty());
   }
 }

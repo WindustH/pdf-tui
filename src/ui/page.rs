@@ -136,7 +136,18 @@ pub(super) fn draw_page(
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  let (image_area, (target_width, target_height)) = fitted_page_request(app, index, area);
+  let (image_area, mut target) = fitted_page_request(app, index, area);
+  // The page store retains one raster per page. Both slides panels must
+  // request the same raster size or they repeatedly replace each other.
+  if app.view == crate::app::ViewMode::Viewer
+    && app.layout.strategy == "slides"
+    && let Some(viewport) = app.viewport
+  {
+    let slot = layout::grid_slots(viewport, &app.layout)[0];
+    let (_, preview_target) = fitted_page_request(app, index, slot_content_area(slot, &app.layout));
+    target = preview_target;
+  }
+  let (target_width, target_height) = target;
   if image_area.width == 0 || image_area.height == 0 {
     return true;
   }

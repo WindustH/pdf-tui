@@ -203,7 +203,7 @@ impl App {
 
   fn execute_layout_parts(&mut self, parts: &[&str], persist: bool) {
     let Some((name, args)) = parts.split_first() else {
-      self.set_message("usage: layout <scroll|grid> ...");
+      self.set_message("usage: layout <scroll|grid|slides> ...");
       return;
     };
     let preserved_progress = self.current_progress().or(self.pending_progress);
