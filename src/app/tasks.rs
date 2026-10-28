@@ -174,7 +174,7 @@ impl App {
     let document = self.document.clone();
     let cache_dir = self.settings.cache_dir.clone();
     let max_pixels = self.settings.config.render.selection_image_max_pixels;
-    let cache_max_bytes = self.settings.config.render.selection_cache_max_bytes;
+    let disk_cache_max_bytes = self.settings.config.render.selection_cache_max_bytes;
     let tx = tx.clone();
     self.selection.copy_image_pending = true;
     self.set_message("copying selected image...");
@@ -184,7 +184,7 @@ impl App {
         selection,
         cache_dir,
         max_pixels,
-        cache_max_bytes,
+        disk_cache_max_bytes,
       )
       .await;
       let result = match result {
@@ -236,7 +236,7 @@ impl App {
     let source_size_bytes = document.size_bytes;
     let source_modified_nanos = document.modified_nanos;
     let cache_dir = self.settings.cache_dir.clone();
-    let cache_max_bytes = self.settings.config.render.selection_cache_max_bytes;
+    let disk_cache_max_bytes = self.settings.config.render.selection_cache_max_bytes;
     let key_for_task = key.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -246,7 +246,7 @@ impl App {
         cache_dir,
         target_width,
         target_height,
-        cache_max_bytes,
+        disk_cache_max_bytes,
       )
       .await;
       let _ = tx.send(AsyncEvent::SelectionImage(SelectionImageOutcome {

@@ -8,17 +8,20 @@ variable it is `%LOCALAPPDATA%\pdf-tui`.
 
 | Path | Contents |
 | --- | --- |
-| `pages/` | Page and slice PNGs; `.toml` files describe slices |
-| `render/` | Terminal output, zstd-compressed (`*.ansi`) |
-| `text/` | Search indexes (`*.toml.zst`) |
-| `search-highlight/` | Pages with a search match inverted |
-| `selection/` | Selection crops and pages with selection marks |
+| `cache.sqlite3` | Page/slice PNGs, slice metadata, terminal renders, search indexes and selection/highlight images |
+| `cache.sqlite3-wal`, `cache.sqlite3-shm` | SQLite WAL and coordination files |
 | `logs/` | Run logs |
 | `runtime/` | One lock file per running instance |
 | `editor/`, `bookmarks/` | Temporary files while editing metadata or bookmarks |
 
-Backends write their output to `pdf-tui/pages/` in the system temporary
-directory first (usually `/tmp`) and move finished files into the cache.
+Backends still use temporary work files. File-only image consumers get private,
+content-addressed files in the system temporary directory from `img-tui`;
+these are removed when the cache session closes normally.
+
+On the first start with SQLite caching, the old `pages/`, `render/`, `text/`,
+`search-highlight/` and `selection/` payload directories are deleted. Old
+payloads are not imported or eagerly regenerated. New entries are computed
+only when requested. Render job lock files may still use those directories.
 
 ## Reading Positions
 
@@ -32,41 +35,38 @@ directory on the next start.
 
 ## Limits And Cleanup
 
-Each cache entry has a `.used` marker whose modification time records when
-the entry was last used (refreshed at most once a minute). Cleanup removes the
-least recently used entries first:
+Persistent caching is implemented by `img-tui`, using SQLite BLOBs and
+transactional least-recently-used pruning. Last-use updates are coarsened to
+one minute. `render.disk_cache_max_bytes` (512 MiB, `0` means unlimited) is enforced
+on writes and at startup. Search highlights and selections also retain their
+individual 64 MiB budgets. A newly written oversized entry can exceed the
+global budget by itself so it can still be displayed.
 
-- At startup the whole cache is trimmed to `render.cache_max_bytes` (512 MiB
-  by default; `0` disables it). Leftover markers, slice descriptions, and
-  temporary files of entries that no longer exist are removed as well.
-- `search-highlight/` and `selection/` are trimmed to
-  `render.search_highlight_cache_max_bytes` and
-  `render.selection_cache_max_bytes` (64 MiB each) whenever an image is added.
+These limits count live payload bytes. SQLite pages, free space, WAL files,
+and temporary images held for active consumers are additional storage.
+Explicit cleanup performs a passive WAL checkpoint and incremental vacuum;
+deleting rows does not promise immediate reduction of the physical DB file.
 
-Page and terminal caches can therefore grow past the limit during a long
-session; the next start trims them.
+Memory caches use moka with an explicit LRU policy and byte weights:
+`render.raw_memory_cache_max_bytes` (32 MiB),
+`render.compressed_memory_cache_max_bytes` (128 MiB, when
+`render.memory_compression` is enabled), and
+`render.prepared_memory_cache_max_bytes` (128 MiB). Protocol results are stored
+in the raw and compressed tiers independently. Limits are approximate during
+concurrent maintenance; one oversized result and a currently borrowed render
+may remain alive beyond the budget.
 
-In memory, terminal output is kept up to `render.raw_memory_cache_max_bytes`
-(32 MiB); older protocol output is compressed and kept up to
-`render.compressed_memory_cache_max_bytes` (128 MiB) when
-`render.memory_compression` is on. Decoded images for protocol rendering use
-up to `render.prepared_memory_cache_max_bytes` (128 MiB).
-
-`:clear-cache` deletes `pages/`, `render/`, `text/`, `search-highlight/`, and
-`selection/`. Logs and reading positions are kept.
+`:clear-cache` clears SQLite payloads and this instance's memory caches.
+Logs, configuration and reading positions are kept. SQLite transactions make
+this safe while other instances run: they retain their own active image files.
+Background jobs and new requests may populate fresh entries after a clear.
 
 ## Several Instances
 
-Instances can share one cache directory. Every entry is written to a
-temporary file next to it and then moved into place atomically (`rename` on
-Unix, `MoveFileExW` on Windows), so readers never see partial files. Work on
-the same entry is serialized with lock files held by an OS file lock (`flock`
-on Unix, `LockFileEx` on Windows); the lock of a process that died is
-reclaimed automatically.
-
-While another instance runs, startup cleanup and log removal are skipped and
-`:clear-cache` is refused, so no instance deletes files another one is
-showing.
+Each application uses its own `cache.sqlite3`. Instances of pdf-tui can share
+one local database through WAL, short transactions and a busy timeout.
+Per-entry OS locks still serialize expensive PDF rendering. Cache clearing
+and trimming no longer depend on the number of running instances.
 
 ## Logs
 

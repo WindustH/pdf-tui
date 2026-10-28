@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use tokio::fs;
 use tracing::debug;
 
-use crate::{cache, config::PdfRasterBackend, selection::PdfSelection};
+use crate::{config::PdfRasterBackend, pdf::types::PdfSelection};
 
 use super::{
   document::{PageImage, PdfDocument, TempPageImage, modified_nanos},
@@ -272,7 +272,6 @@ async fn render_missing_page_batch(
       continue;
     }
     persist_temp_file(temp_output_path, &output_path).await?;
-    cache::touch_cache_entry(&output_path).await;
   }
   let _ = fs::remove_dir_all(temp_dir.path()).await;
   Ok(())

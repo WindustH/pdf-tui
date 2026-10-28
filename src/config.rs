@@ -5,9 +5,6 @@ mod render;
 mod theme;
 
 use std::{
-  collections::BTreeSet,
-  env,
-  fmt::Write as FmtWrite,
   path::{Path, PathBuf},
   time::{SystemTime, UNIX_EPOCH},
 };
@@ -91,39 +88,10 @@ fn app_state_dir() -> PathBuf {
   platform_state_dir().join("pdf-tui")
 }
 
-fn platform_config_dir() -> PathBuf {
-  env_path("XDG_CONFIG_HOME")
-    .or_else(|| env_path("HOME").map(|home| home.join(".config")))
-    .or_else(|| windows_app_data("APPDATA"))
-    .unwrap_or_else(|| PathBuf::from(".config"))
-}
-
-fn platform_cache_dir() -> PathBuf {
-  env_path("XDG_CACHE_HOME")
-    .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
-    .or_else(|| windows_app_data("LOCALAPPDATA"))
-    .unwrap_or_else(|| PathBuf::from(".cache"))
-}
-
-fn platform_state_dir() -> PathBuf {
-  env_path("XDG_STATE_HOME")
-    .or_else(|| env_path("HOME").map(|home| home.join(".local/state")))
-    .or_else(|| windows_app_data("APPDATA"))
-    .unwrap_or_else(|| PathBuf::from(".local/state"))
-}
-
-/// Native Windows sets no `HOME` by default. Fall back to the standard
-/// application data roots there instead of a directory relative to the
-/// working directory.
-fn windows_app_data(name: &str) -> Option<PathBuf> {
-  if cfg!(windows) { env_path(name) } else { None }
-}
-
-fn env_path(name: &str) -> Option<PathBuf> {
-  env::var_os(name)
-    .filter(|value| !value.is_empty())
-    .map(PathBuf::from)
-}
+use framework_tui::paths::{
+  cache_dir as platform_cache_dir, config_dir as platform_config_dir,
+  state_dir as platform_state_dir,
+};
 
 pub fn write_app_config_sync(path: &Path, config: &AppConfig) -> Result<()> {
   let body = app_config_toml(config)?;
@@ -134,73 +102,15 @@ pub fn write_app_config_sync(path: &Path, config: &AppConfig) -> Result<()> {
 
 fn app_config_toml(config: &AppConfig) -> Result<String> {
   let body = toml::to_string_pretty(config)?;
-  Ok(add_app_config_comments(
+  Ok(framework_tui::commented_toml::add_comments(
     &body,
     &[
       "pdf-tui main configuration.",
       "Missing fields are rewritten with defaults when the app loads this file.",
     ],
     pdf_config_comment,
+    comment_table_key,
   ))
-}
-
-fn add_app_config_comments(
-  body: &str,
-  header: &[&str],
-  comment_for: fn(&str) -> Option<&'static str>,
-) -> String {
-  let mut out = String::new();
-  let mut seen_comments = BTreeSet::new();
-  for line in header {
-    push_toml_comment(&mut out, line);
-  }
-  out.push('\n');
-
-  let mut table = String::new();
-  for line in body.lines() {
-    let trimmed = line.trim();
-    if let Some(header) = toml_table_header(trimmed) {
-      table = header.to_string();
-      let comment_key = comment_table_key(&table);
-      if seen_comments.insert(comment_key.clone())
-        && let Some(comment) = comment_for(&comment_key)
-      {
-        push_toml_comment(&mut out, comment);
-      }
-    } else if let Some(key) = toml_field_key(trimmed) {
-      let comment_key = comment_field_key(&table, key);
-      if seen_comments.insert(comment_key.clone())
-        && let Some(comment) = comment_for(&comment_key)
-      {
-        push_toml_comment(&mut out, comment);
-      }
-    }
-    out.push_str(line);
-    out.push('\n');
-  }
-  out
-}
-
-fn push_toml_comment(out: &mut String, comment: &str) {
-  for line in comment.lines() {
-    let _ = writeln!(out, "# {line}");
-  }
-}
-
-fn toml_table_header(line: &str) -> Option<&str> {
-  if line.starts_with("[[") {
-    return None;
-  }
-  line.strip_prefix('[')?.strip_suffix(']')
-}
-
-fn toml_field_key(line: &str) -> Option<&str> {
-  if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-    return None;
-  }
-  let (key, _) = line.split_once('=')?;
-  let key = key.trim();
-  (!key.is_empty()).then_some(key)
 }
 
 fn comment_table_key(table: &str) -> String {
@@ -208,16 +118,6 @@ fn comment_table_key(table: &str) -> String {
     "layout.presets.*".to_string()
   } else {
     table.to_string()
-  }
-}
-
-fn comment_field_key(table: &str, key: &str) -> String {
-  if table.is_empty() {
-    key.to_string()
-  } else if table.starts_with("layout.presets.") {
-    format!("layout.presets.*.{key}")
-  } else {
-    format!("{table}.{key}")
   }
 }
 
@@ -276,28 +176,28 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "render.chafa_args" => {
       Some("Extra arguments passed to Chafa after terminal auto-detection is applied.")
     }
-    "render.cache_max_bytes" => {
-      Some("Maximum disk space for the whole cache, enforced at startup (0 disables the limit).")
-    }
+    "render.disk_cache_max_bytes" => Some(
+      "Maximum live SQLite cache payload bytes, enforced on writes and startup (0 disables the limit).",
+    ),
     "render.cache_compression_level" => Some("Compression level used for cached render data."),
     "render.cache_compression_threads" => {
       Some("Worker threads used when compressing cache entries.")
     }
     "render.memory_compression" => Some("Compress rendered page data kept in memory."),
     "render.raw_memory_cache_max_bytes" => {
-      Some("Maximum RAM used for uncompressed rendered page data.")
+      Some("Maximum RAM used for uncompressed rendered page data (0 disables the limit).")
     }
     "render.compressed_memory_cache_max_bytes" => {
-      Some("Maximum RAM used for compressed rendered page data.")
+      Some("Maximum RAM used for compressed rendered page data (0 disables the limit).")
     }
     "render.prepared_memory_cache_max_bytes" => {
-      Some("Maximum RAM used for prepared page render data.")
+      Some("Maximum RAM used for prepared page render data (0 disables the limit).")
     }
     "render.search_highlight_cache_max_bytes" => {
-      Some("Maximum disk space used for search highlight PNGs.")
+      Some("Maximum live SQLite payload bytes for search highlights.")
     }
     "render.selection_cache_max_bytes" => {
-      Some("Maximum disk space used for selection marker and crop PNGs.")
+      Some("Maximum live SQLite payload bytes for selection images.")
     }
     "render.selection_image_max_pixels" => {
       Some("Maximum pixel count for the copied selection image.")
@@ -504,29 +404,4 @@ async fn write_back_if_toml_changed(path: &Path, original: &str, normalized: &st
 
 fn toml_semantic_value(body: &str) -> Option<toml::Value> {
   toml::from_str(body).ok()
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn app_config_toml_writes_parseable_commented_defaults() {
-    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
-    toml::from_str::<AppConfig>(&body).expect("commented default config should parse");
-    assert!(body.contains("# pdf-tui main configuration."));
-    assert!(body.contains("# Layout preset selected on startup."));
-  }
-
-  #[test]
-  fn app_config_toml_deduplicates_preset_field_comments() {
-    let body = app_config_toml(&AppConfig::default()).expect("default config should serialize");
-    assert_eq!(
-      body
-        .matches("# Layout algorithm used by this preset")
-        .count(),
-      1
-    );
-    assert_eq!(body.matches("# Default number of page columns.").count(), 1);
-  }
 }

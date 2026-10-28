@@ -1,4 +1,3 @@
-mod cache_file;
 mod chafa;
 mod driver;
 mod key;
@@ -17,12 +16,11 @@ use tracing::debug;
 
 use crate::{
   config::RenderConfig,
-  event::{AsyncEvent, RenderOutcome, RenderedImage},
   job_queue::{JobPriority, JobQueue},
   pdf::PageImage,
 };
 
-use driver::render_with_fallbacks;
+use driver::{RenderJob, render_with_fallbacks};
 use key::{hash_native_config, hash_render_config, hash_render_kind};
 use memory::{PreparedImageMemoryCache, RenderedImageMemoryCache, memory_cache_bytes};
 
@@ -101,24 +99,24 @@ impl RenderStore {
 
   /// Requests `page` rendered into `width` x `height` cells; returns the
   /// key under which the result becomes available.
-  pub fn request(
+  pub fn request<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     page: &PageImage,
     width: u16,
     height: u16,
     kind: RenderKind,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> String {
     self.request_with_priority(page, width, height, kind, RenderJobPriority::Visible, tx)
   }
 
-  pub fn preload(
+  pub fn preload<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     page: &PageImage,
     width: u16,
     height: u16,
     kind: RenderKind,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     if self.jobs.allows_preloads() {
       self.request_with_priority(
@@ -132,14 +130,14 @@ impl RenderStore {
     }
   }
 
-  fn request_with_priority(
+  fn request_with_priority<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     page: &PageImage,
     width: u16,
     height: u16,
     kind: RenderKind,
     priority: RenderJobPriority,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> String {
     let cache_key = self.cache_key(page, width, height, kind);
     if width == 0 || height == 0 || self.memory.contains_key(&cache_key) {
@@ -180,7 +178,7 @@ impl RenderStore {
     cache_key
   }
 
-  fn schedule(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  fn schedule<E: From<RenderOutcome> + Send + 'static>(&mut self, tx: &mpsc::UnboundedSender<E>) {
     while let Some((cache_key, priority)) = self.jobs.start_next() {
       let Some(input) = self.job_inputs.get(&cache_key).cloned() else {
         self.jobs.finish(&cache_key);
@@ -205,19 +203,19 @@ impl RenderStore {
       let prepared_images = self.prepared_images.clone();
       let tx = tx.clone();
       tokio::spawn(async move {
-        let result = render_with_fallbacks(
-          input.page,
-          input.width,
-          input.height,
-          input.kind,
+        let result = render_with_fallbacks(RenderJob {
+          page: input.page,
+          width: input.width,
+          height: input.height,
+          kind: input.kind,
           cache_dir,
           config,
           native_config,
           modes,
           prepared_images,
-        )
+        })
         .await;
-        let _ = tx.send(AsyncEvent::Render(RenderOutcome {
+        let _ = tx.send(E::from(RenderOutcome {
           cache_key,
           preload,
           result,
@@ -258,10 +256,10 @@ impl RenderStore {
     self.memory.touch(cache_key);
   }
 
-  pub fn finish(
+  pub fn finish<E: From<RenderOutcome> + Send + 'static>(
     &mut self,
     outcome: RenderOutcome,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> RenderFinish {
     self.jobs.finish(&outcome.cache_key);
     self.job_inputs.remove(&outcome.cache_key);
@@ -324,8 +322,20 @@ pub struct RenderFinish {
   pub needs_draw: bool,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct RenderedBytes {
-  pub(super) data: Vec<u8>,
-  pub(super) refresh: Option<Vec<u8>>,
+pub(super) use img_tui::cache::payload::RenderedBytes;
+
+#[derive(Debug)]
+pub struct RenderOutcome {
+  pub cache_key: String,
+  pub preload: bool,
+  pub result: Result<RenderedImage, String>,
 }
+
+#[derive(Debug, Clone)]
+pub enum RenderedImage {
+  Symbols { text: Text<'static> },
+  Protocol(ProtocolImage),
+}
+
+use img_tui::ProtocolImage;
+use ratatui::text::Text;

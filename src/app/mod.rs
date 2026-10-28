@@ -369,19 +369,19 @@ impl App {
     if self.view == ViewMode::Bookmarks {
       return self
         .bookmarks_keymap
-        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+        .help_entries_filtered(self.key_context(), |action| self.action_available(action));
     }
 
     if self.view == ViewMode::Search {
       return self
         .search_keymap
-        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+        .help_entries_filtered(self.key_context(), |action| self.action_available(action));
     }
 
     if self.view == ViewMode::Selection {
       return self
         .selection_keymap
-        .help_entries_filtered(KeyContext::Browser, |action| self.action_available(action));
+        .help_entries_filtered(self.key_context(), |action| self.action_available(action));
     }
 
     self
@@ -391,11 +391,11 @@ impl App {
 
   pub fn key_context(&self) -> KeyContext {
     match self.view {
-      ViewMode::Viewer => KeyContext::Browser,
-      ViewMode::Metadata => KeyContext::Detail,
-      ViewMode::Bookmarks => KeyContext::Browser,
-      ViewMode::Search => KeyContext::Browser,
-      ViewMode::Selection => KeyContext::Browser,
+      ViewMode::Viewer => KeyContext::Section("viewer"),
+      ViewMode::Metadata => KeyContext::Section("metadata"),
+      ViewMode::Bookmarks => KeyContext::Section("bookmarks"),
+      ViewMode::Search => KeyContext::Section("search"),
+      ViewMode::Selection => KeyContext::Section("selection"),
     }
   }
 

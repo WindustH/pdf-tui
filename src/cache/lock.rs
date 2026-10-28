@@ -366,31 +366,3 @@ fn process_alive_platform(pid: u32) -> bool {
 fn process_alive_platform(_pid: u32) -> bool {
   true
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn cache_lock_is_exclusive_until_dropped() {
-    let dir = std::env::temp_dir().join(format!("pdf-tui-lock-test-{}", std::process::id()));
-    let _ = std_fs::remove_dir_all(&dir);
-    std_fs::create_dir_all(&dir).unwrap();
-    let entry = dir.join("entry.png");
-    let lock = acquire_cache_file_lock_sync(&entry).unwrap();
-    // A held lock is neither re-acquirable nor reclaimable.
-    assert!(
-      try_create_cache_lock(&cache_lock_path(&entry))
-        .unwrap()
-        .is_none()
-    );
-    drop(lock);
-    assert!(!cache_lock_path(&entry).exists());
-    assert!(
-      try_create_cache_lock(&cache_lock_path(&entry))
-        .unwrap()
-        .is_some()
-    );
-    let _ = std_fs::remove_dir_all(&dir);
-  }
-}

@@ -92,14 +92,14 @@ async fn render_page_slice_image_with_batch_mode(
     cache_key: cache_key.clone(),
   };
 
-  if !output_path.exists() {
+  if !img_tui::cache::paths::contains(&output_path) {
     let _lock = acquire_page_image_lock(&page_slice_group_lock_path(document, spec)).await?;
-    if !output_path.exists() {
+    if !img_tui::cache::paths::contains(&output_path) {
       render_missing_page_slice_group(document, &full_page, spec).await?;
     }
   }
 
-  if output_path.exists() {
+  if img_tui::cache::paths::contains(&output_path) {
     debug!(
       page = page_number,
       slice = spec.slice_index + 1,
@@ -111,12 +111,11 @@ async fn render_page_slice_image_with_batch_mode(
 
   // The metadata is derived from the cache key, so an existing file is
   // already correct; rewriting it on every cache hit is wasted I/O.
-  if !metadata_path.exists() {
+  if !img_tui::cache::paths::contains(&metadata_path) {
     write_slice_metadata(&metadata_path, &metadata).await?;
   }
-  cache::touch_cache_entry(&output_path).await;
-  cache::touch_cache_entry(&metadata_path).await;
 
+  let output_path = img_tui::cache::paths::materialize(&output_path)?;
   let (width, height) = image_dimensions(&output_path)
     .await
     .with_context(|| format!("failed to read {}", output_path.display()))?;
@@ -150,7 +149,7 @@ async fn render_missing_page_slice_group(
     .into_iter()
     .filter(|sibling| {
       let cache_key = document.slice_cache_key(*sibling);
-      !page_slice_output_path(document, *sibling, &cache_key).exists()
+      !img_tui::cache::paths::contains(&page_slice_output_path(document, *sibling, &cache_key))
     })
     .collect::<Vec<_>>();
   if specs.is_empty() {
@@ -177,7 +176,7 @@ async fn render_missing_page_slice_group(
   for sibling in specs {
     let cache_key = document.slice_cache_key(sibling);
     let output_path = page_slice_output_path(document, sibling, &cache_key);
-    if output_path.exists() {
+    if img_tui::cache::paths::contains(&output_path) {
       continue;
     }
     let slice_y = sibling.slice_y.min(full_height.saturating_sub(1));
@@ -206,8 +205,6 @@ async fn render_missing_page_slice_group(
       cache_key,
     );
     write_slice_metadata(&output_path.with_extension("toml"), &metadata).await?;
-    cache::touch_cache_entry(&output_path).await;
-    cache::touch_cache_entry(&output_path.with_extension("toml")).await;
   }
   Ok(())
 }

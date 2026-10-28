@@ -15,7 +15,6 @@ use tracing::debug;
 
 use crate::{
   config::RenderConfig,
-  event::{AsyncEvent, OverlayOutcome},
   pdf::PageImage,
   search::{self, PdfSearchMatch},
   selection::{self, PdfRect, PdfSelection},
@@ -82,12 +81,12 @@ impl OverlayStore {
 
   /// `base` with `steps` applied, starting the work when it is not known
   /// yet. `preload` requests do not trigger a redraw when they finish.
-  pub fn request(
+  pub fn request<E: From<OverlayOutcome> + Send + 'static>(
     &mut self,
     base: &PageImage,
     steps: &[OverlayStep],
     preload: bool,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> OverlayState {
     let key = overlay_key(base, steps);
     match self.ready.get(&key) {
@@ -121,13 +120,13 @@ impl OverlayStore {
     self.in_flight.clear();
   }
 
-  fn spawn(
+  fn spawn<E: From<OverlayOutcome> + Send + 'static>(
     &self,
     key: OverlayKey,
     base: PageImage,
     steps: Vec<OverlayStep>,
     preload: bool,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     let job = OverlayJob {
       cache_dir: self.cache_dir.clone(),
@@ -143,7 +142,7 @@ impl OverlayStore {
     );
     tokio::task::spawn_blocking(move || {
       let result = job.apply(base, &steps);
-      let _ = tx.send(AsyncEvent::Overlay(OverlayOutcome {
+      let _ = tx.send(E::from(OverlayOutcome {
         key,
         preload,
         result,
@@ -241,4 +240,11 @@ fn hash_step(step: &OverlayStep, hasher: &mut DefaultHasher) {
       hash_rect(rect, hasher);
     }
   }
+}
+
+#[derive(Debug)]
+pub struct OverlayOutcome {
+  pub key: OverlayKey,
+  pub preload: bool,
+  pub result: Result<PageImage, String>,
 }

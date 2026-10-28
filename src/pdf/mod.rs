@@ -1,9 +1,10 @@
 mod document;
 mod raster;
 mod store;
+pub mod types;
 
 pub use document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, TempPageImage};
-pub use store::PageStore;
+pub use store::{PageOutcome, PageStore};
 
 pub async fn render_uncached_page_image_at(
   document: &PdfDocument,
@@ -22,7 +23,7 @@ pub async fn render_uncached_page_image_at(
 
 pub async fn render_uncached_selection_image_at(
   document: &PdfDocument,
-  selection: crate::selection::PdfSelection,
+  selection: crate::pdf::types::PdfSelection,
   target_width: u32,
   target_height: u32,
 ) -> anyhow::Result<TempPageImage> {

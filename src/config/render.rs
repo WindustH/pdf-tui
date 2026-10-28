@@ -37,7 +37,8 @@ pub struct RenderConfig {
   pub chafa_bin: String,
   pub auto_detect: bool,
   pub chafa_args: Vec<String>,
-  pub cache_max_bytes: u64,
+  #[serde(alias = "cache_max_bytes")]
+  pub disk_cache_max_bytes: u64,
   pub cache_compression_level: i32,
   pub cache_compression_threads: u32,
   pub memory_compression: bool,
@@ -57,7 +58,7 @@ pub struct RenderConfig {
   pub preload_terminal_ahead: usize,
   pub preload_terminal_behind: usize,
   pub passthrough: Option<String>,
-  pub zellij_sixel: String,
+  pub zellij_sixel: framework_tui::config::Toggle,
 }
 
 impl Default for RenderConfig {
@@ -84,7 +85,7 @@ impl Default for RenderConfig {
         "--animate=off".to_string(),
         "--polite=on".to_string(),
       ],
-      cache_max_bytes: 512 * 1024 * 1024,
+      disk_cache_max_bytes: 512 * 1024 * 1024,
       cache_compression_level: 3,
       cache_compression_threads: 2,
       memory_compression: true,
@@ -104,7 +105,7 @@ impl Default for RenderConfig {
       preload_terminal_ahead: 2,
       preload_terminal_behind: 1,
       passthrough: None,
-      zellij_sixel: "off".to_string(),
+      zellij_sixel: framework_tui::config::Toggle::Off,
     }
   }
 }
@@ -132,9 +133,6 @@ impl RenderConfig {
     self.pdf_raster_batch_pages = self.pdf_raster_batch_pages.max(1);
     self.mutool_band_height = self.mutool_band_height.max(1);
     self.mutool_threads = self.mutool_threads.max(1);
-    self.raw_memory_cache_max_bytes = self.raw_memory_cache_max_bytes.max(1);
-    self.compressed_memory_cache_max_bytes = self.compressed_memory_cache_max_bytes.max(1);
-    self.prepared_memory_cache_max_bytes = self.prepared_memory_cache_max_bytes.max(1);
     self.search_highlight_cache_max_bytes = self.search_highlight_cache_max_bytes.max(1);
     self.selection_cache_max_bytes = self.selection_cache_max_bytes.max(1);
     self.selection_image_max_pixels = self.selection_image_max_pixels.max(1);

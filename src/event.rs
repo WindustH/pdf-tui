@@ -1,15 +1,8 @@
 use crossterm::event::Event;
-use img_tui::ProtocolImage;
-use ratatui::text::Text;
 
 use crate::{
-  bookmarks::PdfBookmark,
-  cache::CacheCleanupReport,
-  metadata::PdfMetadataEntry,
-  overlay::OverlayKey,
-  pdf::PdfDocument,
-  pdf::{PageImage, PageSliceSpec},
-  search::PdfSearchIndex,
+  bookmarks::PdfBookmark, cache::CacheCleanupReport, metadata::PdfMetadataEntry, pdf::PageImage,
+  pdf::PdfDocument, search::PdfSearchIndex,
 };
 
 #[derive(Debug)]
@@ -86,34 +79,26 @@ pub struct SelectionImageOutcome {
   pub result: Result<PageImage, String>,
 }
 
-#[derive(Debug)]
-pub struct OverlayOutcome {
-  pub key: OverlayKey,
-  pub preload: bool,
-  pub result: Result<PageImage, String>,
+pub use crate::{
+  overlay::OverlayOutcome,
+  pdf::PageOutcome,
+  render::{RenderOutcome, RenderedImage},
+};
+
+impl From<PageOutcome> for AsyncEvent {
+  fn from(value: PageOutcome) -> Self {
+    Self::Page(value)
+  }
 }
 
-#[derive(Debug)]
-pub struct PageOutcome {
-  pub source_size_bytes: u64,
-  pub source_modified_nanos: u128,
-  pub page_index: usize,
-  pub target_width: u32,
-  pub target_height: u32,
-  pub slice: Option<PageSliceSpec>,
-  pub preload: bool,
-  pub result: Result<PageImage, String>,
+impl From<OverlayOutcome> for AsyncEvent {
+  fn from(value: OverlayOutcome) -> Self {
+    Self::Overlay(value)
+  }
 }
 
-#[derive(Debug)]
-pub struct RenderOutcome {
-  pub cache_key: String,
-  pub preload: bool,
-  pub result: Result<RenderedImage, String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum RenderedImage {
-  Symbols { text: Text<'static> },
-  Protocol(ProtocolImage),
+impl From<RenderOutcome> for AsyncEvent {
+  fn from(value: RenderOutcome) -> Self {
+    Self::Render(value)
+  }
 }

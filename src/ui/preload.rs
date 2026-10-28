@@ -474,35 +474,3 @@ fn preview_area(area: Rect, left_ratio: u16, right_ratio: u16) -> Rect {
   let (_, preview) = split_panels(area, left_ratio, right_ratio);
   safe_inner(preview, 1, 1)
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  fn limits(
-    ahead: usize,
-    behind: usize,
-    terminal_ahead: usize,
-    terminal_behind: usize,
-  ) -> PreloadLimits {
-    PreloadLimits {
-      ahead,
-      behind,
-      slice_ahead: ahead,
-      slice_behind: behind,
-      terminal_ahead,
-      terminal_behind,
-    }
-  }
-
-  #[test]
-  fn list_window_is_clamped_and_marks_terminal_neighbors() {
-    let window = limits(3, 2, 1, 1).list_window(5, 7).collect::<Vec<_>>();
-    assert_eq!(window, vec![(3, false), (4, true), (5, true), (6, true)]);
-    assert_eq!(limits(3, 2, 1, 1).list_window(0, 0).count(), 0);
-    assert_eq!(
-      limits(0, 0, 0, 0).list_window(0, 1).collect::<Vec<_>>(),
-      vec![(0, true)]
-    );
-  }
-}

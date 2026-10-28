@@ -22,7 +22,11 @@ pub(super) fn render_cache_key(
 ) -> String {
   let mut hasher = Sha256::new();
   hasher.update(b"pdf-tui-render-cache-key-v7");
-  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(&page.path)
+      .to_string_lossy()
+      .as_bytes(),
+  );
   hasher.update(page.page_index.to_le_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
@@ -78,7 +82,11 @@ pub(super) fn kitty_image_id(
   }
   let mut hasher = Sha256::new();
   hasher.update(b"pdf-tui-kitty-image-v5");
-  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(&page.path)
+      .to_string_lossy()
+      .as_bytes(),
+  );
   hasher.update(page.page_index.to_le_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
@@ -99,7 +107,11 @@ pub(super) fn kitty_placement_id(
   }
   let mut hasher = Sha256::new();
   hasher.update(b"pdf-tui-kitty-placement-v1");
-  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(&page.path)
+      .to_string_lossy()
+      .as_bytes(),
+  );
   hasher.update(page.page_index.to_le_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());

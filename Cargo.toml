@@ -1,7 +1,8 @@
 [package]
 name = "pdf-tui"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2024"
+rust-version = "1.90"
 license = "MIT"
 description = "Terminal PDF reader built with framework-tui and img-tui"
 
@@ -14,14 +15,13 @@ members = [
 resolver = "3"
 
 [dependencies]
-ansi-to-tui = "8.0.1"
 anyhow = "1.0.103"
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 framework-tui = { path = "crates/framework-tui", features = ["serde"] }
 hex = "0.4.3"
 image = "0.25.10"
-img-tui = { path = "crates/img-tui" }
+img-tui = { path = "crates/img-tui", features = ["cache", "terminal", "chafa"] }
 pdfium-render = { version = "0.9.3", default-features = false, features = ["pdfium_7543", "image_025", "thread_safe"] }
 ratatui = "0.30.2"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -38,3 +38,17 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+
+[[bin]]
+name = "pdf-tui"
+path = "src/main.rs"
+test = false
+
+[patch."https://github.com/WindustH/framework-tui"]
+framework-tui = { path = "crates/framework-tui" }

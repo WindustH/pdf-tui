@@ -39,3 +39,8 @@ These fields are accepted but currently unused: `focused_border`,
 `selected_border`, `selected_foreground`, `selected_background`,
 `hover_foreground`, `hover_background`, `hover_selected_foreground`,
 `hover_selected_background`, `which_key_background`, and `which_key_rest`.
+
+Color names use the shared framework-tui parser: case and spaces, underscores,
+and hyphens are ignored. `light_red` and `bright red` are equivalent;
+`default`/`reset`, `ansi:236` (or `236`) and `#rrggbb` are supported.
+`white` means bright white consistently; use `gray` for normal-intensity white.

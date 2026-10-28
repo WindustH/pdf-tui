@@ -229,7 +229,7 @@ fn search_index_cache_path(
 }
 
 async fn read_cached_search_index(path: &Path) -> Result<PdfSearchIndex, String> {
-  let bytes = async_fs::read(path)
+  let bytes = img_tui::cache::paths::read(path)
     .await
     .map_err(|error| format!("failed to read search cache {}: {error}", path.display()))?;
   let decoded = tokio::task::spawn_blocking(move || zstd::stream::decode_all(Cursor::new(bytes)))
@@ -246,7 +246,7 @@ async fn read_cached_search_index(path: &Path) -> Result<PdfSearchIndex, String>
       cached.version
     ));
   }
-  cache::touch_cache_entry(path).await;
+
   Ok(cached.index)
 }
 
@@ -271,7 +271,7 @@ async fn write_cached_search_index(path: &Path, cached: CachedSearchIndex) -> Re
   cache::write_bytes_atomic(path, &compressed)
     .await
     .map_err(|error| format!("failed to write search cache {}: {error}", path.display()))?;
-  cache::touch_cache_entry(path).await;
+
   Ok(())
 }
 

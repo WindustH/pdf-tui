@@ -122,16 +122,15 @@ fn transformed_page_image(
     "{}.png",
     transformed_cache_key(page, page_size, rect, label)
   ));
-  if !path.exists() {
+  if !img_tui::cache::paths::contains(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if path.exists() {
-      cache::touch_cache_entry_sync(&path);
+    if img_tui::cache::paths::contains(&path) {
       return page_image_from_path(page.page_index, path, page.slice.clone());
     }
     write_transformed_page(&path, page, page_size, rect, transform)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
-  cache::touch_cache_entry_sync(&path);
+
   page_image_from_path(page.page_index, path, page.slice.clone())
 }
 
@@ -150,16 +149,15 @@ fn transformed_crop_image(
     "{}.png",
     transformed_crop_cache_key(crop, selection, marker, label)
   ));
-  if !path.exists() {
+  if !img_tui::cache::paths::contains(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if path.exists() {
-      cache::touch_cache_entry_sync(&path);
+    if img_tui::cache::paths::contains(&path) {
       return page_image_from_path(crop.page_index, path, None);
     }
     write_transformed_crop(&path, crop, selection, marker, transform)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
-  cache::touch_cache_entry_sync(&path);
+
   page_image_from_path(crop.page_index, path, None)
 }
 
@@ -420,7 +418,11 @@ fn base_image_hasher(page: &PageImage, label: &str) -> Sha256 {
   let mut hasher = Sha256::new();
   hasher.update(b"pdf-tui-selection-v1");
   hasher.update(label.as_bytes());
-  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(&page.path)
+      .to_string_lossy()
+      .as_bytes(),
+  );
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(page.width.to_le_bytes());

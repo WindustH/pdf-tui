@@ -42,11 +42,11 @@ Startup and runtime:
   detection, opening the document), and saving the reading position on exit
 - `event_loop.rs`: `Session`, the main loop, the external editor hand-off,
   and one handler per `AsyncEvent`
-- `event.rs`: `AsyncEvent` and the job outcome types
+- `event.rs`: `AsyncEvent` aggregates subsystem outcomes; page, overlay and
+  render jobs send their own types through generic `From<Outcome>` senders
 - `background.rs`: the input thread (paused while an editor owns the
   terminal) and the auto-refresh file watcher
-- `terminal.rs`: terminal setup and restore, buffered output, and the panic
-  hook
+- `terminal.rs`: reexports the shared `img-tui::terminal::ProtocolTui`
 - `logging.rs`: per-run log files
 
 Application state (`app/`), with `App` extended by one module per concern:
@@ -81,7 +81,8 @@ Image pipeline:
 - `overlay.rs`: `OverlayStore`, producing search-highlighted and
   selection-marked copies of page images off the UI thread
 - `render/`: `RenderStore`, rendering with mode fallbacks, the Chafa driver,
-  cache keys, the on-disk render cache format, and the in-memory caches
+  named `RenderJob` arguments, cache keys, and adapters for the shared
+  SQLite payload codec and moka caches
 - `ui/`: frame composition (`ui.rs`), page drawing primitives (`page.rs`),
   one module per view, the footer and modals, and preloading around the view
 
@@ -89,7 +90,8 @@ Document features:
 
 - `search/`: building and caching the `pdftotext` index, matching, and
   highlight images
-- `selection/`: selection types, marks drawn into images, and crop rendering
+- `pdf/types.rs`: pure page-coordinate points, rectangles and selections
+- `selection/`: marks drawn into images and crop rendering
 - `metadata.rs`: reading and writing metadata with `exiftool`
 - `bookmarks.rs`: reading and writing the outline with `pdftk`
 - `clipboard.rs`: copying text and PNGs with the platform's clipboard tools

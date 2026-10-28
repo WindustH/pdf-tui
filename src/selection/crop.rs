@@ -19,7 +19,7 @@ pub async fn render_selection_preview_image(
   cache_dir: PathBuf,
   target_width: u32,
   target_height: u32,
-  cache_max_bytes: u64,
+  disk_cache_max_bytes: u64,
 ) -> Result<PageImage, String> {
   render_selection_image(SelectionImageRenderRequest {
     document,
@@ -29,7 +29,7 @@ pub async fn render_selection_preview_image(
     target_height,
     max_pixels: None,
     label: "preview",
-    cache_max_bytes,
+    disk_cache_max_bytes,
   })
   .await
 }
@@ -39,7 +39,7 @@ pub async fn render_selection_copy_image(
   selection: PdfSelection,
   cache_dir: PathBuf,
   max_pixels: u64,
-  cache_max_bytes: u64,
+  disk_cache_max_bytes: u64,
 ) -> Result<PathBuf, String> {
   let (target_width, target_height) = selection_copy_page_target(selection, max_pixels);
   render_selection_image(SelectionImageRenderRequest {
@@ -50,7 +50,7 @@ pub async fn render_selection_copy_image(
     target_height,
     max_pixels: Some(max_pixels),
     label: "copy",
-    cache_max_bytes,
+    disk_cache_max_bytes,
   })
   .await
   .map(|image| image.path)
@@ -64,7 +64,7 @@ struct SelectionImageRenderRequest {
   target_height: u32,
   max_pixels: Option<u64>,
   label: &'static str,
-  cache_max_bytes: u64,
+  disk_cache_max_bytes: u64,
 }
 
 async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<PageImage, String> {
@@ -76,7 +76,7 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
     target_height,
     max_pixels,
     label,
-    cache_max_bytes,
+    disk_cache_max_bytes,
   } = request;
   let target_width = target_width.max(1);
   let target_height = target_height.max(1);
@@ -95,15 +95,13 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
       label,
     )
   ));
-  if path.exists() {
-    cache::touch_cache_entry(&path).await;
+  if img_tui::cache::paths::contains(&path) {
     return page_image_from_path(selection.page_index, path, None);
   }
   let _lock = cache::acquire_cache_file_lock(&path)
     .await
     .map_err(|error| format!("failed to lock selection cache {}: {error}", path.display()))?;
-  if path.exists() {
-    cache::touch_cache_entry(&path).await;
+  if img_tui::cache::paths::contains(&path) {
     return page_image_from_path(selection.page_index, path, None);
   }
   if let Ok(crop) = crate::pdf::render_uncached_selection_image_at(
@@ -123,8 +121,8 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
           path.display()
         )
       })?;
-    cache::touch_cache_entry(&path).await;
-    let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, cache_max_bytes);
+
+    let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, disk_cache_max_bytes);
     return page_image_from_path(selection.page_index, path, None);
   }
   let (fallback_page_width, fallback_page_height) =
@@ -143,8 +141,8 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
   })
   .await
   .map_err(|error| format!("selection image worker failed: {error}"))??;
-  cache::touch_cache_entry(&path).await;
-  let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, cache_max_bytes);
+
+  let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, disk_cache_max_bytes);
   page_image_from_path(selection.page_index, path, None)
 }
 

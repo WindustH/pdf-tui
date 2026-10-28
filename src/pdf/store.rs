@@ -6,13 +6,10 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{
-  event::{AsyncEvent, PageOutcome},
-  job_queue::{JobPriority, JobQueue},
-};
+use crate::job_queue::{JobPriority, JobQueue};
 
 use super::{
-  document::{PageSliceSpec, PdfDocument},
+  document::{PageImage, PageSliceSpec, PdfDocument},
   raster::{
     preload_page_image, preload_page_slice_image, render_page_image, render_page_slice_image,
   },
@@ -91,33 +88,41 @@ impl PageStore {
     self.clear_state();
   }
 
-  pub fn request_slice(&mut self, spec: PageSliceSpec, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  pub fn request_slice<E: From<PageOutcome> + Send + 'static>(
+    &mut self,
+    spec: PageSliceSpec,
+    tx: &mpsc::UnboundedSender<E>,
+  ) {
     self.request_slice_with_priority(spec, PageJobPriority::Visible, tx);
   }
 
-  pub fn preload_slice(&mut self, spec: PageSliceSpec, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  pub fn preload_slice<E: From<PageOutcome> + Send + 'static>(
+    &mut self,
+    spec: PageSliceSpec,
+    tx: &mpsc::UnboundedSender<E>,
+  ) {
     if self.jobs.allows_preloads() {
       self.request_slice_with_priority(spec, PageJobPriority::SlicePreload, tx);
     }
   }
 
-  pub fn request(
+  pub fn request<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     page_index: usize,
     target_width: u32,
     target_height: u32,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     let key = page_key(page_index, target_width, target_height);
     self.request_page_with_priority(key, PageJobPriority::Visible, tx);
   }
 
-  pub fn preload(
+  pub fn preload<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     page_index: usize,
     target_width: u32,
     target_height: u32,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     if self.jobs.allows_preloads() {
       let key = page_key(page_index, target_width, target_height);
@@ -125,11 +130,11 @@ impl PageStore {
     }
   }
 
-  fn request_slice_with_priority(
+  fn request_slice_with_priority<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     spec: PageSliceSpec,
     priority: PageJobPriority,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     let spec = spec.normalized();
     if self.completed_slices.contains(&spec) {
@@ -138,11 +143,11 @@ impl PageStore {
     self.request_job(PageJob::Slice(spec), priority, tx);
   }
 
-  fn request_page_with_priority(
+  fn request_page_with_priority<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     key: PageRequestKey,
     priority: PageJobPriority,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     if self.completed.get(&key.page_index) == Some(&key) {
       return;
@@ -150,11 +155,11 @@ impl PageStore {
     self.request_job(PageJob::Page(key), priority, tx);
   }
 
-  fn request_job(
+  fn request_job<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     job: PageJob,
     priority: PageJobPriority,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) {
     if job.page_index() >= self.document.page_count {
       return;
@@ -177,7 +182,7 @@ impl PageStore {
     self.schedule(tx);
   }
 
-  fn schedule(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+  fn schedule<E: From<PageOutcome> + Send + 'static>(&mut self, tx: &mpsc::UnboundedSender<E>) {
     while let Some((job, priority)) = self.jobs.start_next() {
       debug!(
         ?job,
@@ -198,11 +203,11 @@ impl PageStore {
 
   /// Records a finished job; returns whether a visible request was waiting
   /// for it. `completed` marks it done so it is not requested again.
-  pub fn finish(
+  pub fn finish<E: From<PageOutcome> + Send + 'static>(
     &mut self,
     page: &PageOutcome,
     completed: bool,
-    tx: &mpsc::UnboundedSender<AsyncEvent>,
+    tx: &mpsc::UnboundedSender<E>,
   ) -> bool {
     let job = match page.slice {
       Some(spec) => PageJob::Slice(spec),
@@ -245,11 +250,11 @@ fn page_key(page_index: usize, target_width: u32, target_height: u32) -> PageReq
   }
 }
 
-fn spawn_page_job(
+fn spawn_page_job<E: From<PageOutcome> + Send + 'static>(
   document: PdfDocument,
   job: PageJob,
   preload: bool,
-  tx: mpsc::UnboundedSender<AsyncEvent>,
+  tx: mpsc::UnboundedSender<E>,
 ) {
   tokio::spawn(async move {
     let (result, slice, key) = match job {
@@ -271,7 +276,7 @@ fn spawn_page_job(
         (result, Some(spec), key)
       }
     };
-    let _ = tx.send(AsyncEvent::Page(PageOutcome {
+    let _ = tx.send(E::from(PageOutcome {
       source_size_bytes: document.size_bytes,
       source_modified_nanos: document.modified_nanos,
       page_index: key.page_index,
@@ -282,4 +287,16 @@ fn spawn_page_job(
       result: result.map_err(|error| error.to_string()),
     }));
   });
+}
+
+#[derive(Debug)]
+pub struct PageOutcome {
+  pub source_size_bytes: u64,
+  pub source_modified_nanos: u128,
+  pub page_index: usize,
+  pub target_width: u32,
+  pub target_height: u32,
+  pub slice: Option<PageSliceSpec>,
+  pub preload: bool,
+  pub result: Result<PageImage, String>,
 }

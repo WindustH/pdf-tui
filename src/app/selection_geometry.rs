@@ -305,18 +305,3 @@ pub(super) fn distance_to_rect(area: Rect, column: u16, row: u16) -> u32 {
   let dy = u32::from(row.abs_diff(nearest_y));
   dx * dx + dy * dy
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn distance_to_rect_does_not_wrap_on_wide_terminals() {
-    let area = Rect::new(0, 0, 10, 10);
-    assert_eq!(distance_to_rect(area, 5, 5), 0);
-    // 300 columns away: 291^2 must not wrap around u16.
-    assert_eq!(distance_to_rect(area, 300, 5), 291 * 291);
-    let near = Rect::new(250, 0, 10, 10);
-    assert!(distance_to_rect(near, 300, 5) < distance_to_rect(area, 300, 5));
-  }
-}

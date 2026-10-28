@@ -30,16 +30,15 @@ pub fn highlighted_viewer_image(
   fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
   let cache_key = highlighted_cache_key(page, search_match);
   let path = dir.join(format!("{cache_key}.png"));
-  if !path.exists() {
+  if !img_tui::cache::paths::contains(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if path.exists() {
-      cache::touch_cache_entry_sync(&path);
+    if img_tui::cache::paths::contains(&path) {
       return page_image_from_highlight_path(page, path).map(Some);
     }
     write_highlighted_page(&path, page, search_match)?;
     let _ = cache::enforce_cache_target_limit_sync(cache_dir, &dir, max_bytes);
   }
-  cache::touch_cache_entry_sync(&path);
+
   page_image_from_highlight_path(page, path).map(Some)
 }
 
@@ -47,6 +46,7 @@ fn page_image_from_highlight_path(
   page: &PageImage,
   path: std::path::PathBuf,
 ) -> Result<PageImage, String> {
+  let path = img_tui::cache::paths::materialize(&path).map_err(|e| e.to_string())?;
   let metadata = fs::metadata(&path).map_err(|err| err.to_string())?;
   Ok(PageImage {
     page_index: page.page_index,
@@ -91,7 +91,11 @@ fn write_highlighted_page(
 fn highlighted_cache_key(page: &PageImage, search_match: &PdfSearchMatch) -> String {
   let mut hasher = Sha256::new();
   hasher.update(b"pdf-tui-search-highlight-v1");
-  hasher.update(page.path.to_string_lossy().as_bytes());
+  hasher.update(
+    img_tui::cache::paths::identity(&page.path)
+      .to_string_lossy()
+      .as_bytes(),
+  );
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(page.width.to_le_bytes());

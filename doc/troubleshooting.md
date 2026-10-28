@@ -76,7 +76,7 @@ Lower the limits (bytes):
 
 ```toml
 [render]
-cache_max_bytes = 268435456
+disk_cache_max_bytes = 268435456
 raw_memory_cache_max_bytes = 16777216
 compressed_memory_cache_max_bytes = 67108864
 prepared_memory_cache_max_bytes = 67108864

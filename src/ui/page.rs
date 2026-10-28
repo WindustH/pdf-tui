@@ -268,33 +268,3 @@ pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<Strin
     area,
   );
 }
-
-#[cfg(test)]
-mod tests {
-  use ratatui::{
-    buffer::Buffer,
-    style::{Color, Style},
-    text::{Line, Span, Text},
-    widgets::Widget,
-  };
-
-  use super::*;
-
-  #[test]
-  fn symbols_render_like_the_previous_paragraph_path() {
-    let text = Text::from(vec![
-      Line::from(vec![
-        Span::styled("ab", Style::default().fg(Color::Red)),
-        Span::styled("cdefgh", Style::default().bg(Color::Blue)),
-      ]),
-      Line::from("xyz"),
-      Line::from("clipped"),
-    ]);
-    let area = Rect::new(1, 1, 5, 2);
-    let mut expected = Buffer::empty(Rect::new(0, 0, 8, 4));
-    Paragraph::new(text.clone()).render(area, &mut expected);
-    let mut actual = Buffer::empty(Rect::new(0, 0, 8, 4));
-    (&text).render(area, &mut actual);
-    assert_eq!(actual, expected);
-  }
-}

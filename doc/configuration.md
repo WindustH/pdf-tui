@@ -112,7 +112,7 @@ Terminal rendering:
 | `chafa_bin` | `"chafa"` | Chafa executable |
 | `chafa_args` | `["--format=symbols", "--colors=full", "--symbols=block", "--animate=off", "--polite=on"]` | Extra Chafa arguments. With `auto_detect`, `--colors` and `--symbols` follow the terminal; `--format`, `--probe`, `--relative`, and `--passthrough` are always set by `pdf-tui`, and `--scale=max` is added unless given |
 | `chafa_threads` | `1` | `chafa --threads`; `0` lets Chafa decide |
-| `zellij_sixel` | `"off"` | Sixel under Zellij: `off`, `auto` (when the terminal answers the probe), or `on` |
+| `zellij_sixel` | `false` | Sixel under Zellij: `off`, `auto` (when the terminal answers the probe), or `on` |
 | `passthrough` | unset | Ignored; multiplexer passthrough is detected automatically |
 
 Scheduling and preloading:
@@ -129,7 +129,7 @@ Caches (sizes in bytes):
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `cache_max_bytes` | `536870912` (512 MiB) | Disk limit for the whole cache, enforced at startup; `0` disables it |
+| `disk_cache_max_bytes` | `536870912` (512 MiB) | Disk limit for the whole cache, enforced at startup; `0` disables it |
 | `cache_compression_level` | `3` | zstd level of cached terminal renders |
 | `cache_compression_threads` | `2` | zstd threads; `0` compresses on one thread |
 | `raw_memory_cache_max_bytes` | `33554432` (32 MiB) | Terminal renders kept in memory |
@@ -172,3 +172,7 @@ another program opens at the start, while changes seen during the session
 (refresh, metadata or bookmark edits) are remembered. `--progress` takes
 precedence. Clearing the cache never loses positions. The 100 most recently
 closed documents are kept.
+
+Shared rendering settings accept `zellij_sixel = true`, `false`, or `"auto"`.
+Legacy `"on"`/`"off"` values remain readable. `render.disk_cache_max_bytes`
+is the canonical disk budget; `cache_max_bytes` remains a read alias.

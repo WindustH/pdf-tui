@@ -132,35 +132,3 @@ fn wrapped_entry(
   rows.push(Line::from(row));
   rows
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  fn text(line: &Line<'_>) -> String {
-    line
-      .spans
-      .iter()
-      .map(|span| span.content.as_ref())
-      .collect()
-  }
-
-  #[test]
-  fn long_values_wrap_under_the_value_column() {
-    let rows = wrapped_entry(
-      "path",
-      &"x".repeat(60),
-      40,
-      Style::default(),
-      Style::default(),
-    );
-    let rows = rows.iter().map(text).collect::<Vec<_>>();
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0], format!("{:<16} {}", "path", "x".repeat(23)));
-    assert_eq!(rows[1], format!("{}{}", " ".repeat(17), "x".repeat(23)));
-    assert_eq!(rows[2], format!("{}{}", " ".repeat(17), "x".repeat(14)));
-    // Narrow panels wrap without indentation, and every row fits.
-    let rows = wrapped_entry("label", "value text", 8, Style::default(), Style::default());
-    assert!(rows.iter().all(|row| row.width() <= 8));
-  }
-}

@@ -1,3 +1,4 @@
+use framework_tui::theme::parse_color;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
@@ -102,61 +103,4 @@ fn default_hover_selected_foreground() -> String {
 
 fn default_hover_selected_background() -> String {
   "green".to_string()
-}
-
-fn parse_color(value: &str) -> Color {
-  let lower = value.trim().to_ascii_lowercase();
-  match lower.as_str() {
-    "reset" => Color::Reset,
-    "black" => Color::Black,
-    "red" => Color::Red,
-    "green" => Color::Green,
-    "yellow" => Color::Yellow,
-    "blue" => Color::Blue,
-    "magenta" => Color::Magenta,
-    "cyan" => Color::Cyan,
-    "gray" | "grey" => Color::Gray,
-    "dark_gray" | "dark_grey" | "darkgray" | "darkgrey" => Color::DarkGray,
-    "light_red" | "lightred" => Color::LightRed,
-    "light_green" | "lightgreen" => Color::LightGreen,
-    "light_yellow" | "lightyellow" => Color::LightYellow,
-    "light_blue" | "lightblue" => Color::LightBlue,
-    "light_magenta" | "lightmagenta" => Color::LightMagenta,
-    "light_cyan" | "lightcyan" => Color::LightCyan,
-    "white" => Color::White,
-    _ => {
-      if let Some(raw) = lower.strip_prefix("ansi:") {
-        return raw
-          .parse::<u8>()
-          .map(Color::Indexed)
-          .unwrap_or(Color::Reset);
-      }
-      parse_hex_color(&lower).unwrap_or(Color::Reset)
-    }
-  }
-}
-
-/// `#rrggbb`; anything else (including non-ASCII input) is rejected.
-fn parse_hex_color(value: &str) -> Option<Color> {
-  let hex = value.strip_prefix('#')?;
-  if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-    return None;
-  }
-  let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
-  Some(Color::Rgb(channel(0..2)?, channel(2..4)?, channel(4..6)?))
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn parses_hex_and_rejects_malformed_colors() {
-    assert_eq!(parse_color("#FF8000"), Color::Rgb(255, 128, 0));
-    assert_eq!(parse_color("ansi:42"), Color::Indexed(42));
-    // Seven bytes but not seven characters: must not slice inside 'é'.
-    assert_eq!(parse_color("#a\u{e9}bcd"), Color::Reset);
-    assert_eq!(parse_color("#12345"), Color::Reset);
-    assert_eq!(parse_color("#12345g"), Color::Reset);
-  }
 }

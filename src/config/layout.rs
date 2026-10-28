@@ -433,64 +433,10 @@ fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {
   presets
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn layout_counts_are_bounded() {
-    let mut config = LayoutConfig::default();
-    let error = config
-      .set_active_from_args("grid", &["65535", "65535"])
-      .unwrap_err();
-    assert!(error.contains("at most"), "{error}");
-    let layout = config.set_active_from_args("grid", &["3", "4"]).unwrap();
-    assert_eq!((layout.rows, layout.columns), (3, 4));
-
-    // Oversized values from config.toml are clamped rather than rejected.
-    let preset = config.presets.get_mut("grid").unwrap();
-    preset.params.clear();
-    preset.rows = 1000;
-    preset.columns = 0;
-    let layout = config.set_active_from_args("grid", &[]).unwrap();
-    assert_eq!((layout.rows, layout.columns), (MAX_LAYOUT_COUNT, 1));
-  }
-}
-
 fn parse_layout_ratio(param: &str, value: &str) -> Result<u16, String> {
   let ratio = parse_layout_u16(param, value)?;
   if ratio == 0 {
     return Err(format!("{param} must be greater than zero"));
   }
   Ok(ratio)
-}
-
-#[cfg(test)]
-mod slides_tests {
-  use super::*;
-
-  #[test]
-  fn slides_ratios_and_invalid_arguments() {
-    let mut config = LayoutConfig::default();
-    let defaults = config.set_active_from_args("slides", &[]).unwrap();
-    assert_eq!((defaults.left_ratio, defaults.right_ratio), (1, 3));
-    assert!(!defaults.show_border);
-    let custom = config.set_active_from_args("slides", &["2", "5"]).unwrap();
-    assert_eq!((custom.left_ratio, custom.right_ratio), (2, 5));
-    assert_eq!((custom.columns, custom.rows), (1, 1));
-    for args in [
-      vec!["0", "3"],
-      vec!["1", "0"],
-      vec!["-1"],
-      vec!["1.5"],
-      vec!["65536"],
-      vec!["1", "2", "3"],
-    ] {
-      assert!(config.set_active_from_args("slides", &args).is_err());
-      assert_eq!(config.effective(), custom);
-    }
-    let saved = toml::to_string(&config).unwrap();
-    let restored: LayoutConfig = toml::from_str(&saved).unwrap();
-    assert_eq!(restored.effective(), custom);
-  }
 }

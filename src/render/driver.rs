@@ -1,230 +1,158 @@
-use std::path::{Path, PathBuf};
-
-use ansi_to_tui::IntoText;
-use img_tui::{
-  EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
-  native_image,
-};
-use ratatui::text::Text;
-use sha2::{Digest, Sha256};
-use tokio::fs;
-
-use crate::{cache, config::RenderConfig, event::RenderedImage, pdf::PageImage};
-
+//! Render jobs and cached protocol/text output; arguments are named at scheduling time.
 use super::{
   PreparedImageCache, RenderKind, RenderedBytes,
-  cache_file::{decode_cache_file, rewrite_cache_file, write_cache_file},
   chafa::run_chafa,
   key::{kitty_image_id, kitty_placement_id, render_cache_key},
   memory::prepared_image_estimated_bytes,
 };
+use crate::{cache, config::RenderConfig, pdf::PageImage, render::RenderedImage};
+use img_tui::cache::payload::{CacheHeader, decode_cache_file, encode_cache_file};
+use img_tui::{
+  EncodedProtocolImage, NativeImageConfig, ProtocolImage, ProtocolImageSpec, RenderMode,
+  native_image,
+};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn render_with_fallbacks(
-  page: PageImage,
-  width: u16,
-  height: u16,
-  kind: RenderKind,
-  cache_dir: PathBuf,
-  config: RenderConfig,
-  native_config: NativeImageConfig,
-  modes: Vec<RenderMode>,
-  prepared_images: PreparedImageCache,
-) -> Result<RenderedImage, String> {
+pub(super) struct RenderJob {
+  pub page: PageImage,
+  pub width: u16,
+  pub height: u16,
+  pub kind: RenderKind,
+  pub cache_dir: PathBuf,
+  pub config: RenderConfig,
+  pub native_config: NativeImageConfig,
+  pub modes: Vec<RenderMode>,
+  pub prepared_images: PreparedImageCache,
+}
+
+pub(super) async fn render_with_fallbacks(job: RenderJob) -> Result<RenderedImage, String> {
   let mut errors = Vec::new();
-  for mode in modes {
-    let image_id = kitty_image_id(&page, width, height, mode);
-    let placement_id = if native_config.kitty_unicode_placeholders {
+  for &mode in &job.modes {
+    let image_id = kitty_image_id(&job.page, job.width, job.height, mode);
+    let placement_id = if job.native_config.kitty_unicode_placeholders {
       None
     } else {
-      kitty_placement_id(&page, mode, image_id)
+      kitty_placement_id(&job.page, mode, image_id)
     };
-    let rendered = render_or_read_cache(
-      &page,
-      &cache_dir,
-      width,
-      height,
-      kind,
-      &config,
-      &native_config,
+    let header = CacheHeader {
+      width: job.width,
+      height: job.height,
+      cell_pixels: job.native_config.cell_pixels,
       mode,
       image_id,
       placement_id,
-      &prepared_images,
-    )
-    .await;
-    match rendered {
-      Ok(rendered) => return Ok(rendered),
+    };
+    match render_or_read_cache(&job, &header).await {
+      Ok(image) => return Ok(image),
       Err(error) => errors.push(format!("{}: {error}", mode.label())),
     }
   }
   Err(errors.join("; "))
 }
 
-#[allow(clippy::too_many_arguments)]
+async fn read_render_cache(
+  path: &std::path::Path,
+  header: &CacheHeader,
+  native: &NativeImageConfig,
+) -> Option<RenderedImage> {
+  let bytes = img_tui::cache::paths::read(path).await.ok()?;
+  let decoded = decode_cache_file(&bytes, header).await.ok()?;
+  let spec = protocol_spec(
+    header.mode,
+    header.width,
+    header.height,
+    header.image_id,
+    header.placement_id,
+  );
+  decode_rendered(decoded.payload, &spec, native).ok()
+}
+
 async fn render_or_read_cache(
-  page: &PageImage,
-  cache_dir: &Path,
-  width: u16,
-  height: u16,
-  kind: RenderKind,
-  config: &RenderConfig,
-  native_config: &NativeImageConfig,
-  mode: RenderMode,
-  image_id: Option<u32>,
-  placement_id: Option<u32>,
-  prepared_images: &PreparedImageCache,
+  job: &RenderJob,
+  header: &CacheHeader,
 ) -> Result<RenderedImage, String> {
-  let cache_path = cache_dir.join(format!(
+  let cache_path = job.cache_dir.join(format!(
     "{}.ansi",
-    render_cache_key(page, width, height, kind, config, native_config, mode)
+    render_cache_key(
+      &job.page,
+      job.width,
+      job.height,
+      job.kind,
+      &job.config,
+      &job.native_config,
+      header.mode
+    )
   ));
-  let read_request = RenderCacheReadRequest {
-    cache_path: &cache_path,
-    width,
-    height,
-    native_config,
-    mode,
-    image_id,
-    placement_id,
-    config,
-  };
-
-  if let Some(rendered) = read_render_cache(read_request).await {
-    return rendered;
+  if let Some(image) = read_render_cache(&cache_path, header, &job.native_config).await {
+    return Ok(image);
   }
-
   let _lock = cache::acquire_cache_file_lock(&cache_path)
     .await
-    .map_err(|error| {
-      format!(
-        "failed to lock render cache {}: {error}",
-        cache_path.display()
-      )
-    })?;
-  if let Some(rendered) = read_render_cache(read_request).await {
-    return rendered;
+    .map_err(|e| e.to_string())?;
+  if let Some(image) = read_render_cache(&cache_path, header, &job.native_config).await {
+    return Ok(image);
   }
-
-  let bytes = render_bytes(
-    page,
-    width,
-    height,
-    kind,
-    config,
-    native_config,
-    mode,
-    image_id,
-    placement_id,
-    prepared_images,
-  )
-  .await?;
-
-  let _ = write_cache_file(
-    &cache_path,
+  let bytes = render_bytes(job, header).await?;
+  if let Ok(encoded) = encode_cache_file(
     &bytes,
-    width,
-    height,
-    native_config.cell_pixels,
-    mode,
-    image_id,
-    placement_id,
-    config,
-  )
-  .await;
-
-  let spec = protocol_spec(mode, width, height, image_id, placement_id);
-  decode_rendered(bytes, &spec, native_config)
-}
-
-#[derive(Clone, Copy)]
-struct RenderCacheReadRequest<'a> {
-  cache_path: &'a Path,
-  width: u16,
-  height: u16,
-  native_config: &'a NativeImageConfig,
-  mode: RenderMode,
-  image_id: Option<u32>,
-  placement_id: Option<u32>,
-  config: &'a RenderConfig,
-}
-
-async fn read_render_cache(
-  request: RenderCacheReadRequest<'_>,
-) -> Option<Result<RenderedImage, String>> {
-  let bytes = fs::read(request.cache_path).await.ok()?;
-  let decoded = decode_cache_file(
-    &bytes,
-    request.width,
-    request.height,
-    request.native_config.cell_pixels,
-    request.mode,
-    request.image_id,
-    request.placement_id,
+    header,
+    job.config.cache_compression_level,
+    job.config.cache_compression_threads,
   )
   .await
-  .ok()?;
-  if decoded.should_rewrite {
-    rewrite_cache_file(
-      request.cache_path,
-      &decoded.payload,
-      request.width,
-      request.height,
-      request.native_config.cell_pixels,
-      request.mode,
-      request.image_id,
-      request.placement_id,
-      request.config,
-    )
-    .await;
+    && let Err(error) = cache::write_bytes_atomic(&cache_path, &encoded).await
+  {
+    tracing::warn!(%error, "failed to store terminal render cache");
   }
-  cache::touch_cache_entry(request.cache_path).await;
   let spec = protocol_spec(
-    request.mode,
-    request.width,
-    request.height,
-    decoded.image_id,
-    decoded.placement_id,
+    header.mode,
+    header.width,
+    header.height,
+    header.image_id,
+    header.placement_id,
   );
-  Some(decode_rendered(
-    decoded.payload,
-    &spec,
-    request.native_config,
-  ))
+  decode_rendered(bytes, &spec, &job.native_config)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn render_bytes(
-  page: &PageImage,
-  width: u16,
-  height: u16,
-  kind: RenderKind,
-  config: &RenderConfig,
-  native_config: &NativeImageConfig,
-  mode: RenderMode,
-  image_id: Option<u32>,
-  placement_id: Option<u32>,
-  prepared_images: &PreparedImageCache,
-) -> Result<RenderedBytes, String> {
-  let source_path = page.path.clone();
-  if mode.is_protocol() {
-    let prepared =
-      prepared_native_image(page, width, height, kind, native_config, prepared_images).await?;
-    let spec = protocol_spec(mode, width, height, image_id, placement_id);
-    native_image::encode_protocol(&prepared, &spec, native_config)
+async fn render_bytes(job: &RenderJob, header: &CacheHeader) -> Result<RenderedBytes, String> {
+  if header.mode.is_protocol() {
+    let prepared = prepared_native_image(
+      &job.page,
+      job.width,
+      job.height,
+      job.kind,
+      &job.native_config,
+      &job.prepared_images,
+    )
+    .await?;
+    let spec = protocol_spec(
+      header.mode,
+      header.width,
+      header.height,
+      header.image_id,
+      header.placement_id,
+    );
+    native_image::encode_protocol(&prepared, &spec, &job.native_config)
       .await
       .map(|encoded| RenderedBytes {
         data: encoded.data,
         refresh: encoded.refresh,
       })
-      .map_err(|error| error.to_string())
+      .map_err(|e| e.to_string())
   } else {
-    run_chafa(&source_path, width, height, config, mode)
-      .await
-      .map(|data| RenderedBytes {
-        data,
-        refresh: None,
-      })
+    run_chafa(
+      &job.page.path,
+      job.width,
+      job.height,
+      &job.config,
+      header.mode,
+    )
+    .await
+    .map(|data| RenderedBytes {
+      data,
+      refresh: None,
+    })
   }
 }
 
@@ -317,7 +245,7 @@ fn decode_rendered(
       .map(RenderedImage::Protocol)
       .map_err(|error| error.to_string())
   } else {
-    let text: Text<'static> = bytes.data.into_text().map_err(|error| error.to_string())?;
+    let text = img_tui::chafa::decode(&bytes.data)?;
     Ok(RenderedImage::Symbols { text })
   }
 }

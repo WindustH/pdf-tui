@@ -55,16 +55,16 @@ bookmark, search, and selection views list entries.
 Results are cached on disk, so revisited pages appear quickly, also in later
 sessions:
 
-- `pages/`: page and slice PNGs, plus a `.toml` description of each slice
-- `render/`: terminal output, zstd-compressed (`*.ansi`)
-- `text/`: search indexes
-- `search-highlight/` and `selection/`: marked copies and selection crops
+- SQLite `pages` namespace: page and slice PNGs, plus a `.toml` description of each slice
+- SQLite `render` namespace: zstd-compressed terminal output
+- SQLite `text` namespace: search indexes
+- SQLite `search-highlight` and `selection` namespaces: marked copies and selection crops
 
 Cache entries are keyed by the file's path, size, and modification time, the
 pixel size, the backend, and the relevant settings, so a changed PDF or
 setting never reuses stale images. Terminal output is also kept in memory:
-recent renders as they are (`raw_memory_cache_max_bytes`), older protocol
-renders compressed (`compressed_memory_cache_max_bytes`).
+decoded renders (`raw_memory_cache_max_bytes`) and compressed protocol
+renders (`compressed_memory_cache_max_bytes`) use separate byte-weighted LRU caches.
 
 Details on sizes, cleanup, and sharing between instances are in
 [Cache And Logs](cache-and-logs.md).

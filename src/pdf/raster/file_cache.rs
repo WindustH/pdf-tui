@@ -22,6 +22,11 @@ pub(super) async fn read_cached_page_image(
   page_index: usize,
   path: &Path,
 ) -> Result<Option<PageImage>> {
+  if !img_tui::cache::paths::contains(path) {
+    return Ok(None);
+  }
+  let materialized = img_tui::cache::paths::materialize(path)?;
+  let path = materialized.as_path();
   let metadata = match fs::metadata(path).await {
     Ok(metadata) => metadata,
     Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -39,7 +44,7 @@ pub(super) async fn read_cached_page_image(
       return Ok(None);
     }
   };
-  cache::touch_cache_entry(path).await;
+
   Ok(Some(PageImage {
     page_index,
     path: path.to_path_buf(),
@@ -143,17 +148,9 @@ pub(super) async fn create_temp_work_dir(base: &Path, label: &str) -> Result<Tem
 /// `rename` fails; the fallback copies next to the destination first so
 /// readers never observe a partially written cache entry.
 pub(super) async fn persist_temp_file(temp_path: &Path, output_path: &Path) -> Result<()> {
-  if let Some(parent) = output_path.parent() {
-    fs::create_dir_all(parent)
-      .await
-      .with_context(|| format!("failed to create {}", parent.display()))?;
-  }
-  if fs::rename(temp_path, output_path).await.is_ok() {
-    return Ok(());
-  }
-  let copied = cache::copy_file_atomic(temp_path, output_path).await;
+  let result = cache::copy_file_atomic(temp_path, output_path).await;
   let _ = fs::remove_file(temp_path).await;
-  copied
+  result
 }
 
 pub(super) async fn collect_numbered_png_outputs(

@@ -1,25 +1,6 @@
-use std::{
-  collections::{HashMap, VecDeque},
-  io::Cursor,
-  sync::Arc,
-};
-
-use img_tui::{ProtocolImage, ProtocolPlacement, RenderMode, native_image};
-
-use crate::event::RenderedImage;
-
-#[derive(Debug)]
-struct RenderedImageEntry {
-  storage: RenderedImageStorage,
-  stored_bytes: usize,
-  raw_bytes: usize,
-}
-
-#[derive(Debug)]
-enum RenderedImageStorage {
-  Raw(RenderedImage),
-  Compressed(CompressedRenderedImage),
-}
+use crate::render::RenderedImage;
+use img_tui::{ProtocolImage, ProtocolPlacement, RenderMode, cache::MemoryCache, native_image};
+use std::{io::Cursor, sync::Arc};
 
 #[derive(Debug)]
 struct CompressedRenderedImage {
@@ -30,217 +11,65 @@ struct CompressedRenderedImage {
   fingerprint: u64,
   erase: Option<Arc<str>>,
 }
-
 #[derive(Debug)]
 pub(super) struct RenderedImageMemoryCache {
-  entries: HashMap<String, RenderedImageEntry>,
-  order: VecDeque<String>,
-  raw_bytes: usize,
-  compressed_bytes: usize,
-  raw_max_bytes: usize,
-  compressed_max_bytes: usize,
+  raw: MemoryCache<String, RenderedImage>,
+  compressed: MemoryCache<String, CompressedRenderedImage>,
+  current: Option<Arc<RenderedImage>>,
   compression: bool,
 }
-
 impl RenderedImageMemoryCache {
   pub(super) fn new(raw_max_bytes: usize, compressed_max_bytes: usize, compression: bool) -> Self {
     Self {
-      entries: HashMap::new(),
-      order: VecDeque::new(),
-      raw_bytes: 0,
-      compressed_bytes: 0,
-      raw_max_bytes: raw_max_bytes.max(1),
-      compressed_max_bytes: compressed_max_bytes.max(1),
+      raw: MemoryCache::new(raw_max_bytes as u64),
+      compressed: MemoryCache::new(compressed_max_bytes as u64),
+      current: None,
       compression,
     }
   }
-
   pub(super) fn clear(&mut self) {
-    self.entries.clear();
-    self.order.clear();
-    self.raw_bytes = 0;
-    self.compressed_bytes = 0;
+    self.current = None;
+    self.raw.clear();
+    self.compressed.clear();
   }
-
   pub(super) fn contains_key(&self, key: &str) -> bool {
-    self.entries.contains_key(key)
+    self.raw.contains_key(key) || self.compressed.contains_key(key)
   }
-
   pub(super) fn get(&mut self, key: &str) -> Option<&RenderedImage> {
-    if !self.entries.contains_key(key) {
-      return None;
+    self.current = self.raw.get(key);
+    if self.current.is_none() {
+      let compressed = self.compressed.get(key)?;
+      match compressed.decompress() {
+        Ok(image) => {
+          let bytes = rendered_image_bytes(&image);
+          self.raw.insert(key.to_string(), image, bytes as u64);
+          self.current = self.raw.get(key);
+        }
+        Err(_) => {
+          self.compressed.remove(key);
+          return None;
+        }
+      }
     }
-    if self
-      .entries
-      .get(key)
-      .is_some_and(|entry| matches!(entry.storage, RenderedImageStorage::Compressed(_)))
-    {
-      let image = self
-        .entries
-        .get(key)
-        .and_then(|entry| match &entry.storage {
-          RenderedImageStorage::Compressed(compressed) => compressed.decompress().ok(),
-          RenderedImageStorage::Raw(_) => None,
-        })?;
-      self.promote_to_raw(key, image);
-    }
-    self.touch(key);
-    self
-      .entries
-      .get(key)
-      .and_then(|entry| match &entry.storage {
-        RenderedImageStorage::Raw(image) => Some(image),
-        RenderedImageStorage::Compressed(_) => None,
-      })
+    self.current.as_deref()
   }
-
   pub(super) fn touch(&mut self, key: &str) {
-    if !self.entries.contains_key(key) {
-      return;
-    }
-    self.order.retain(|candidate| candidate != key);
-    self.order.push_back(key.to_string());
+    self.raw.touch(key);
+    self.compressed.touch(key);
   }
-
   pub(super) fn insert(&mut self, key: String, image: RenderedImage) {
-    if let Some(old) = self.entries.remove(&key) {
-      self.subtract_entry_bytes(&old);
-      self.order.retain(|candidate| candidate != &key);
+    if self.compression
+      && let Some(compressed) = CompressedRenderedImage::compress(&image)
+    {
+      let bytes = compressed.stored_bytes();
+      self
+        .compressed
+        .insert(key.clone(), compressed, bytes as u64);
     }
     let bytes = rendered_image_bytes(&image);
-    self.raw_bytes = self.raw_bytes.saturating_add(bytes);
-    self.order.push_back(key.clone());
-    self.entries.insert(
-      key.clone(),
-      RenderedImageEntry {
-        storage: RenderedImageStorage::Raw(image),
-        stored_bytes: bytes,
-        raw_bytes: bytes,
-      },
-    );
-    self.evict_over_budget(&key);
-  }
-
-  fn evict_over_budget(&mut self, protected_key: &str) {
-    if self.compression {
-      self.compress_cold_raw_entries(protected_key);
-    }
-    while self.compressed_bytes > self.compressed_max_bytes
-      && self.evict_oldest(protected_key, |entry| {
-        matches!(entry.storage, RenderedImageStorage::Compressed(_))
-      })
-    {}
-    while self.raw_bytes > self.raw_max_bytes
-      && self.evict_oldest(protected_key, |entry| {
-        matches!(entry.storage, RenderedImageStorage::Raw(_))
-      })
-    {}
-  }
-
-  /// Removes the least recently used entry accepted by `matches_entry`,
-  /// never `protected_key` or the last entry; returns whether one was
-  /// removed.
-  fn evict_oldest(
-    &mut self,
-    protected_key: &str,
-    matches_entry: impl Fn(&RenderedImageEntry) -> bool,
-  ) -> bool {
-    if self.entries.len() <= 1 {
-      return false;
-    }
-    let Some(candidate) = self.pop_oldest_evictable_matching(protected_key, matches_entry) else {
-      return false;
-    };
-    if let Some(entry) = self.entries.remove(&candidate) {
-      self.subtract_entry_bytes(&entry);
-    }
-    true
-  }
-
-  fn compress_cold_raw_entries(&mut self, protected_key: &str) {
-    if self.raw_bytes <= self.raw_max_bytes {
-      return;
-    }
-    let keys = self.order.iter().cloned().collect::<Vec<_>>();
-    for key in keys {
-      if self.raw_bytes <= self.raw_max_bytes {
-        break;
-      }
-      if key == protected_key {
-        continue;
-      }
-      let Some(entry) = self.entries.get_mut(&key) else {
-        continue;
-      };
-      let RenderedImageStorage::Raw(image) = &entry.storage else {
-        continue;
-      };
-      let Some(compressed) = CompressedRenderedImage::compress(image) else {
-        continue;
-      };
-      let stored_bytes = compressed.stored_bytes();
-      self.raw_bytes = self.raw_bytes.saturating_sub(entry.raw_bytes);
-      self.compressed_bytes = self.compressed_bytes.saturating_add(stored_bytes);
-      entry.storage = RenderedImageStorage::Compressed(compressed);
-      entry.stored_bytes = stored_bytes;
-    }
-  }
-
-  fn promote_to_raw(&mut self, key: &str, image: RenderedImage) {
-    let Some(entry) = self.entries.get_mut(key) else {
-      return;
-    };
-    let old_stored_bytes = entry.stored_bytes;
-    let old_was_raw = matches!(entry.storage, RenderedImageStorage::Raw(_));
-    let raw_bytes = rendered_image_bytes(&image);
-    entry.storage = RenderedImageStorage::Raw(image);
-    entry.stored_bytes = raw_bytes;
-    entry.raw_bytes = raw_bytes;
-    if old_was_raw {
-      self.raw_bytes = self
-        .raw_bytes
-        .saturating_sub(old_stored_bytes)
-        .saturating_add(raw_bytes);
-    } else {
-      self.compressed_bytes = self.compressed_bytes.saturating_sub(old_stored_bytes);
-      self.raw_bytes = self.raw_bytes.saturating_add(raw_bytes);
-    }
-    self.evict_over_budget(key);
-  }
-
-  fn pop_oldest_evictable_matching(
-    &mut self,
-    protected_key: &str,
-    matches_entry: impl Fn(&RenderedImageEntry) -> bool,
-  ) -> Option<String> {
-    let initial_len = self.order.len();
-    for _ in 0..initial_len {
-      let candidate = self.order.pop_front()?;
-      if candidate == protected_key {
-        self.order.push_back(candidate);
-        continue;
-      }
-      if !self.entries.get(&candidate).is_some_and(&matches_entry) {
-        self.order.push_back(candidate);
-        continue;
-      }
-      return Some(candidate);
-    }
-    None
-  }
-
-  fn subtract_entry_bytes(&mut self, entry: &RenderedImageEntry) {
-    match &entry.storage {
-      RenderedImageStorage::Raw(_) => {
-        self.raw_bytes = self.raw_bytes.saturating_sub(entry.raw_bytes);
-      }
-      RenderedImageStorage::Compressed(_) => {
-        self.compressed_bytes = self.compressed_bytes.saturating_sub(entry.stored_bytes);
-      }
-    }
+    self.raw.insert(key, image, bytes as u64);
   }
 }
-
 impl CompressedRenderedImage {
   fn compress(image: &RenderedImage) -> Option<Self> {
     let RenderedImage::Protocol(image) = image else {
@@ -286,86 +115,30 @@ impl CompressedRenderedImage {
   }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct PreparedImageCacheEntry {
-  image: native_image::PreparedNativeImage,
-  bytes: usize,
-}
-
 #[derive(Debug)]
 pub(super) struct PreparedImageMemoryCache {
-  entries: HashMap<String, PreparedImageCacheEntry>,
-  order: VecDeque<String>,
-  bytes: usize,
-  max_bytes: usize,
+  entries: MemoryCache<String, native_image::PreparedNativeImage>,
 }
-
 impl PreparedImageMemoryCache {
   pub(super) fn new(max_bytes: usize) -> Self {
     Self {
-      entries: HashMap::new(),
-      order: VecDeque::new(),
-      bytes: 0,
-      max_bytes: max_bytes.max(1),
+      entries: MemoryCache::new(max_bytes as u64),
     }
   }
-
   pub(super) fn get(&mut self, key: &str) -> Option<native_image::PreparedNativeImage> {
-    if !self.entries.contains_key(key) {
-      return None;
-    }
-    self.touch(key);
-    self.entries.get(key).map(|entry| entry.image.clone())
+    self.entries.get(key).map(|v| (*v).clone())
   }
-
   pub(super) fn insert(
     &mut self,
     key: String,
     image: native_image::PreparedNativeImage,
     bytes: usize,
   ) {
-    if let Some(old) = self.entries.remove(&key) {
-      self.bytes = self.bytes.saturating_sub(old.bytes);
-      self.order.retain(|candidate| candidate != &key);
-    }
-    let bytes = bytes.max(1);
-    self.bytes = self.bytes.saturating_add(bytes);
-    self.order.push_back(key.clone());
-    self
-      .entries
-      .insert(key.clone(), PreparedImageCacheEntry { image, bytes });
-    self.evict_over_budget(&key);
-  }
-
-  fn touch(&mut self, key: &str) {
-    if !self.entries.contains_key(key) {
-      return;
-    }
-    self.order.retain(|candidate| candidate != key);
-    self.order.push_back(key.to_string());
-  }
-
-  fn evict_over_budget(&mut self, protected_key: &str) {
-    while self.bytes > self.max_bytes && self.entries.len() > 1 {
-      let Some(candidate) = self.order.pop_front() else {
-        break;
-      };
-      if candidate == protected_key {
-        self.order.push_back(candidate);
-        if self.order.len() <= 1 {
-          break;
-        }
-        continue;
-      }
-      if let Some(entry) = self.entries.remove(&candidate) {
-        self.bytes = self.bytes.saturating_sub(entry.bytes);
-      }
-    }
+    self.entries.insert(key, image, bytes as u64);
   }
 }
-
 pub(super) fn memory_cache_bytes(configured: u64) -> usize {
-  usize::try_from(configured).unwrap_or(usize::MAX).max(1)
+  usize::try_from(configured).unwrap_or(usize::MAX)
 }
 
 fn rendered_image_bytes(image: &RenderedImage) -> usize {

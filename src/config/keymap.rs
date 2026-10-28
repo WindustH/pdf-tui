@@ -182,37 +182,42 @@ impl Default for KeymapConfig {
 
 impl KeymapConfig {
   pub fn bindings(&self) -> KeyBindings {
-    KeyBindings::from_sections(
-      self.viewer.binding_configs(),
-      self.metadata.binding_configs(),
-      self.input.binding_configs(),
+    KeyBindings::from_named_sections(
+      [
+        ("viewer", self.viewer.binding_configs()),
+        ("metadata", self.metadata.binding_configs()),
+        ("input", self.input.binding_configs()),
+      ],
       self.global.binding_configs(),
     )
   }
 
   pub fn bookmarks_bindings(&self) -> KeyBindings {
-    KeyBindings::from_sections(
-      self.bookmarks.binding_configs(),
-      Vec::<KeyBindingConfig>::new(),
-      self.input.binding_configs(),
+    KeyBindings::from_named_sections(
+      [
+        ("bookmarks", self.bookmarks.binding_configs()),
+        ("input", self.input.binding_configs()),
+      ],
       self.global.binding_configs(),
     )
   }
 
   pub fn search_bindings(&self) -> KeyBindings {
-    KeyBindings::from_sections(
-      self.search.binding_configs(),
-      Vec::<KeyBindingConfig>::new(),
-      self.input.binding_configs(),
+    KeyBindings::from_named_sections(
+      [
+        ("search", self.search.binding_configs()),
+        ("input", self.input.binding_configs()),
+      ],
       Vec::<KeyBindingConfig>::new(),
     )
   }
 
   pub fn selection_bindings(&self) -> KeyBindings {
-    KeyBindings::from_sections(
-      self.selection.binding_configs(),
-      Vec::<KeyBindingConfig>::new(),
-      self.input.binding_configs(),
+    KeyBindings::from_named_sections(
+      [
+        ("selection", self.selection.binding_configs()),
+        ("input", self.input.binding_configs()),
+      ],
       Vec::<KeyBindingConfig>::new(),
     )
   }

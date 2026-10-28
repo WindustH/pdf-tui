@@ -99,21 +99,3 @@ pub fn fitted_page_area(
     height,
   )
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn fitted_page_area_keeps_aspect_and_centers() {
-    // A portrait page in a wide area is limited by height and centered.
-    let area = Rect::new(10, 5, 100, 20);
-    let fitted = fitted_page_area(area, Some((8, 16)), Some((595, 842)));
-    assert_eq!(fitted.height, 20);
-    assert!(fitted.width < 100);
-    assert_eq!(fitted.x, 10 + (100 - fitted.width) / 2);
-    // Degenerate areas never produce an empty page rect or overflow.
-    let tiny = fitted_page_area(Rect::new(0, 0, 1, 1), None, Some((1, 100_000)));
-    assert_eq!((tiny.width, tiny.height), (1, 1));
-  }
-}

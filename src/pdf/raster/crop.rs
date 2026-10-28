@@ -1,4 +1,4 @@
-use crate::selection::PdfSelection;
+use crate::pdf::types::PdfSelection;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CropPixelRect {

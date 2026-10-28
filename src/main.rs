@@ -1,4 +1,6 @@
 mod app;
+use img_tui::cache::paths::NamespaceSpec;
+
 mod background;
 mod bookmarks;
 mod cache;
@@ -65,6 +67,19 @@ async fn main() -> Result<()> {
     .with_context(|| format!("failed to resolve {}", cli.path.display()))?;
 
   let mut settings = config::load_or_create().await?;
+  let _image_cache = img_tui::cache::paths::CachePaths::new(
+    &settings.cache_dir,
+    &[
+      NamespaceSpec::new("pages", "pages", false).with_extension("toml"),
+      NamespaceSpec::new("pages", "pages", true),
+      NamespaceSpec::new("render", "render", false),
+      NamespaceSpec::new("text", "text", false),
+      NamespaceSpec::new("search-highlight", "search-highlight", true),
+      NamespaceSpec::new("selection", "selection", true),
+    ],
+    settings.config.render.disk_cache_max_bytes,
+  )?;
+  discard_legacy_cache(&settings.cache_dir)?;
   let _cache_instance = cache::register_instance(&settings.cache_dir)?;
   let log_path = logging::init(&settings.cache_dir)?;
   eprintln!("pdf-tui log: {}", log_path.display());
@@ -171,13 +186,11 @@ async fn main() -> Result<()> {
 /// Removes the obsolete crop cache and trims the disk cache to its limit.
 /// Failures are reported but never block startup.
 async fn tidy_cache(settings: &Settings) {
-  if let Err(error) = cache::remove_legacy_crop_cache(&settings.cache_dir).await {
-    warn!(%error, "failed to remove legacy crop cache");
-    eprintln!("failed to remove legacy crop cache: {error}");
-  }
-  if let Err(error) =
-    cache::enforce_render_cache_limit(&settings.cache_dir, settings.config.render.cache_max_bytes)
-      .await
+  if let Err(error) = cache::enforce_render_cache_limit(
+    &settings.cache_dir,
+    settings.config.render.disk_cache_max_bytes,
+  )
+  .await
   {
     warn!(%error, "failed to clean pdf-tui cache");
     eprintln!("failed to clean pdf-tui cache: {error}");
@@ -201,7 +214,7 @@ fn render_setup(
     if let Some(modes) = capability::render_modes_override_from_env(RENDER_MODES_ENV) {
       modes
     } else if effective_render.auto_detect {
-      terminal_capability.preferred_render_modes(&effective_render.zellij_sixel)
+      terminal_capability.preferred_render_modes(effective_render.zellij_sixel.as_str())
     } else {
       vec![RenderMode::Symbols, RenderMode::Ascii]
     };
@@ -245,5 +258,40 @@ fn apply_cli_layout(settings: &mut Settings, args: &[String]) -> Result<()> {
     .layout
     .set_active_from_args(name, &raw_args)
     .map_err(anyhow::Error::msg)?;
+  Ok(())
+}
+
+/// Obsolete payloads are disposable; no import or eager regeneration.
+fn discard_legacy_cache(root: &std::path::Path) -> anyhow::Result<()> {
+  let marker = root.join("legacy-files-removed-v1");
+  if marker.exists() {
+    return Ok(());
+  }
+  match std::fs::remove_dir_all(root.join("pages")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  match std::fs::remove_dir_all(root.join("render")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  match std::fs::remove_dir_all(root.join("text")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  match std::fs::remove_dir_all(root.join("search-highlight")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  match std::fs::remove_dir_all(root.join("selection")) {
+    Ok(()) => {}
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+    Err(e) => return Err(e.into()),
+  }
+  framework_tui::fs::atomic_write_bytes(&marker, b"done")?;
   Ok(())
 }
