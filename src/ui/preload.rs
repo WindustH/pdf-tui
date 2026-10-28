@@ -118,12 +118,28 @@ pub fn pump_preload(
       let start = app.grid_start_page;
       let end = start.saturating_add(capacity).min(app.document.page_count);
       let visible = (start..end).collect::<Vec<_>>();
-      preload_grid_neighbors(app, ctx, area, &visible);
+      preload_grid_neighbors(app, ctx, area, &visible, &app.layout);
     }
     ViewMode::Bookmarks => preload_bookmark_previews(app, ctx, area),
     ViewMode::Search if app.search_preload_ready() => preload_search_previews(app, ctx, area),
     ViewMode::Selection => preload_selection_history(app, ctx, area),
     ViewMode::Search | ViewMode::Metadata => {}
+  }
+  if app.view == ViewMode::Viewer
+    && app.layout.composition.is_some()
+    && let Some(panel) = &app.follower
+  {
+    if let Some(layout) = &panel.scroll_layout {
+      let rows = layout.visible_rows(panel.start, panel.area.height, panel.config.scroll_divisor);
+      preload_scroll_neighbors(app, ctx, panel.area, layout, rows);
+    } else {
+      let end = panel
+        .start
+        .saturating_add(panel.config.grid_capacity())
+        .min(app.document.page_count);
+      let visible = (panel.start..end).collect::<Vec<_>>();
+      preload_grid_neighbors(app, ctx, panel.area, &visible, &panel.config);
+    }
   }
 }
 
@@ -272,7 +288,9 @@ fn preload_scroll_row(
     let slice = app.slice_image(&spec);
     if preload_slice
       && slice.is_none()
-      && app.page_image(spec.page_index).is_some()
+      && app
+        .page_variant(spec.page_index, (spec.target_width, spec.target_height))
+        .is_some()
       && slice_groups.insert(SlicePreloadGroup::from_spec(spec))
     {
       ctx.pages.preload_slice(spec, ctx.tx);
@@ -290,15 +308,16 @@ pub(super) fn preload_grid_neighbors(
   ctx: &mut PreloadCtx<'_>,
   area: Rect,
   visible: &[usize],
+  config: &crate::config::EffectiveLayoutConfig,
 ) {
   let (Some(&first), Some(&last)) = (visible.first(), visible.last()) else {
     return;
   };
   let limits = PreloadLimits::new(&app.settings.config.render);
-  let Some(slot) = layout::grid_slots(area, &app.layout).first().copied() else {
+  let Some(slot) = layout::grid_slots(area, config).first().copied() else {
     return;
   };
-  let page_area = slot_content_area(slot, &app.layout);
+  let page_area = slot_content_area(slot, config);
   if page_area.width == 0 || page_area.height == 0 {
     return;
   }
@@ -394,7 +413,9 @@ fn preload_fitted_page(
   let Some(image_area) = preload_page_png(app, ctx, page_index, area) else {
     return;
   };
-  if preload_terminal && let Some(page) = app.page_image(page_index) {
+  if preload_terminal
+    && let Some(page) = app.page_variant(page_index, fitted_page_request(app, page_index, area).1)
+  {
     ctx.preload_terminal(page, image_area);
   }
 }
@@ -430,7 +451,10 @@ fn preload_search_preview(
   if !preload_terminal {
     return;
   }
-  let Some(page) = app.page_image(result.page_index) else {
+  let Some(page) = app.page_variant(
+    result.page_index,
+    fitted_page_request(app, result.page_index, area).1,
+  ) else {
     return;
   };
   let steps = [OverlayStep::SearchHighlight(result.clone())];

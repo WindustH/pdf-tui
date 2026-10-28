@@ -28,6 +28,7 @@ pub(super) fn render_cache_key(
       .as_bytes(),
   );
   hasher.update(page.page_index.to_le_bytes());
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(width.to_le_bytes());
@@ -88,6 +89,7 @@ pub(super) fn kitty_image_id(
       .as_bytes(),
   );
   hasher.update(page.page_index.to_le_bytes());
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(width.to_le_bytes());
@@ -113,6 +115,7 @@ pub(super) fn kitty_placement_id(
       .as_bytes(),
   );
   hasher.update(page.page_index.to_le_bytes());
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(image_id.unwrap_or_default().to_le_bytes());

@@ -30,9 +30,9 @@ pub fn highlighted_viewer_image(
   fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
   let cache_key = highlighted_cache_key(page, search_match);
   let path = dir.join(format!("{cache_key}.png"));
-  if !img_tui::cache::paths::contains(&path) {
+  if !cache::valid_cached_image(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if img_tui::cache::paths::contains(&path) {
+    if cache::valid_cached_image(&path) {
       return page_image_from_highlight_path(page, path).map(Some);
     }
     write_highlighted_page(&path, page, search_match)?;
@@ -96,6 +96,7 @@ fn highlighted_cache_key(page: &PageImage, search_match: &PdfSearchMatch) -> Str
       .to_string_lossy()
       .as_bytes(),
   );
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(page.width.to_le_bytes());

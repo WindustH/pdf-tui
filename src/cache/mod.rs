@@ -24,3 +24,22 @@ fn now_nanos() -> u128 {
     .unwrap_or_default()
     .as_nanos()
 }
+
+pub use lock::acquire_document_lock;
+
+/// A cached image is optional: unreadable materializations are evicted so the
+/// caller can regenerate them under its normal cache lock.
+pub fn valid_cached_image(path: &std::path::Path) -> bool {
+  if !img_tui::cache::paths::contains(path) {
+    return false;
+  }
+  let materialized = img_tui::cache::paths::materialize(path);
+  if let Ok(file) = &materialized {
+    if image::image_dimensions(file).is_ok() {
+      return true;
+    }
+    let _ = std::fs::remove_file(file);
+  }
+  let _ = img_tui::cache::paths::remove(path);
+  false
+}

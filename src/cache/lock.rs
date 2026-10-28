@@ -366,3 +366,12 @@ fn process_alive_platform(pid: u32) -> bool {
 fn process_alive_platform(_pid: u32) -> bool {
   true
 }
+
+pub fn acquire_document_lock(path: &Path) -> Result<CacheFileLock> {
+  use sha2::{Digest, Sha256};
+  let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+  let key = hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()));
+  let root = framework_tui::paths::cache_dir().join("pdf-tui/document-locks");
+  std_fs::create_dir_all(&root)?;
+  acquire_cache_file_lock_sync(&root.join(key))
+}

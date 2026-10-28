@@ -122,9 +122,9 @@ fn transformed_page_image(
     "{}.png",
     transformed_cache_key(page, page_size, rect, label)
   ));
-  if !img_tui::cache::paths::contains(&path) {
+  if !cache::valid_cached_image(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if img_tui::cache::paths::contains(&path) {
+    if cache::valid_cached_image(&path) {
       return page_image_from_path(page.page_index, path, page.slice.clone());
     }
     write_transformed_page(&path, page, page_size, rect, transform)?;
@@ -149,9 +149,9 @@ fn transformed_crop_image(
     "{}.png",
     transformed_crop_cache_key(crop, selection, marker, label)
   ));
-  if !img_tui::cache::paths::contains(&path) {
+  if !cache::valid_cached_image(&path) {
     let _lock = cache::acquire_cache_file_lock_sync(&path).map_err(|error| error.to_string())?;
-    if img_tui::cache::paths::contains(&path) {
+    if cache::valid_cached_image(&path) {
       return page_image_from_path(crop.page_index, path, None);
     }
     write_transformed_crop(&path, crop, selection, marker, transform)?;
@@ -423,6 +423,7 @@ fn base_image_hasher(page: &PageImage, label: &str) -> Sha256 {
       .to_string_lossy()
       .as_bytes(),
   );
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(page.width.to_le_bytes());

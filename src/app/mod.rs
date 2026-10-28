@@ -3,6 +3,8 @@
 
 mod bookmark_state;
 mod commands;
+mod composition;
+pub(crate) use composition::FollowerPanel;
 mod input;
 mod metadata_state;
 mod navigation;
@@ -71,15 +73,17 @@ pub enum ConfirmDialog {
 }
 
 pub struct App {
+  pub(crate) overlay_areas: Vec<Rect>,
   pub document: PdfDocument,
   pub settings: Settings,
   keymap: KeyBindings,
   bookmarks_keymap: KeyBindings,
   search_keymap: KeyBindings,
   selection_keymap: KeyBindings,
-  pages: Vec<Option<PageImage>>,
+  page_variants: HashMap<(usize, u32, u32), PageImage>,
+  pub(crate) follower: Option<FollowerPanel>,
   slices: HashMap<PageSliceSpec, PageImage>,
-  page_errors: Vec<Option<String>>,
+  page_errors: HashMap<(usize, u32, u32), String>,
   slice_errors: HashMap<PageSliceSpec, String>,
   pub layout: EffectiveLayoutConfig,
   pub scroll: u32,
@@ -117,7 +121,6 @@ impl App {
     let search_keymap = settings.keymap.search_bindings();
     let selection_keymap = settings.keymap.selection_bindings();
     let layout = settings.config.layout.effective();
-    let page_count = document.page_count;
     let (metadata, outline) =
       tasks::read_document_info(&document, &settings.config.render.pdftk_bin);
     let (metadata, metadata_error) = match metadata {
@@ -134,15 +137,17 @@ impl App {
       settings.config.behavior.search_right_ratio,
     );
     Self {
+      overlay_areas: Vec::new(),
       document,
       settings,
       keymap,
       bookmarks_keymap,
       search_keymap,
       selection_keymap,
-      pages: vec![None; page_count],
+      page_variants: HashMap::new(),
+      follower: None,
       slices: HashMap::new(),
-      page_errors: vec![None; page_count],
+      page_errors: HashMap::new(),
       slice_errors: HashMap::new(),
       layout,
       scroll: 0,
@@ -172,6 +177,10 @@ impl App {
       command_state: CommandState::default(),
       key_dispatcher: KeyDispatcher::default(),
     }
+  }
+
+  pub fn request_quit(&mut self) {
+    self.quit = true;
   }
 
   pub fn should_quit(&self) -> bool {
@@ -226,9 +235,9 @@ impl App {
   }
 
   pub fn clear_cached_images(&mut self) {
-    self.pages.fill(None);
+    self.page_variants.clear();
     self.slices.clear();
-    self.page_errors.fill(None);
+    self.page_errors.clear();
     self.slice_errors.clear();
     self.selection.clear_images();
     self.lock_frame_navigation_if_enabled();
@@ -241,15 +250,19 @@ impl App {
     bookmarks: Result<Vec<PdfBookmark>, String>,
   ) {
     let progress = self.current_progress().or(self.pending_progress);
-    let page_count = document.page_count;
     self.document = document;
-    self.pages = vec![None; page_count];
+    self.page_variants.clear();
+    self.follower = None;
     self.slices.clear();
-    self.page_errors = vec![None; page_count];
+    self.page_errors.clear();
     self.slice_errors.clear();
     self.scroll_layout = None;
-    self.focused_page = self.focused_page.min(page_count.saturating_sub(1));
-    self.grid_start_page = self.grid_start_page.min(page_count.saturating_sub(1));
+    self.focused_page = self
+      .focused_page
+      .min(self.document.page_count.saturating_sub(1));
+    self.grid_start_page = self
+      .grid_start_page
+      .min(self.document.page_count.saturating_sub(1));
     self.scroll = 0;
     match metadata {
       Ok(metadata) => {
@@ -444,17 +457,26 @@ impl App {
     }
   }
 
-  pub fn finish_page(&mut self, page_index: usize, result: Result<PageImage, String>) {
-    if page_index >= self.pages.len() {
+  pub fn finish_page(
+    &mut self,
+    page_index: usize,
+    target: (u32, u32),
+    result: Result<PageImage, String>,
+  ) {
+    if page_index >= self.document.page_count {
       return;
     }
     match result {
       Ok(page) => {
-        self.pages[page_index] = Some(page);
-        self.page_errors[page_index] = None;
+        self
+          .page_variants
+          .insert((page_index, target.0, target.1), page);
+        self.page_errors.remove(&(page_index, target.0, target.1));
       }
       Err(error) => {
-        self.page_errors[page_index] = Some(error.clone());
+        self
+          .page_errors
+          .insert((page_index, target.0, target.1), error.clone());
         self.set_message(format!("page {} failed: {error}", page_index + 1));
       }
     }
@@ -498,12 +520,15 @@ impl App {
     }
   }
 
-  pub fn page_image(&self, index: usize) -> Option<&PageImage> {
-    self.pages.get(index)?.as_ref()
+  pub fn page_variant(&self, index: usize, target: (u32, u32)) -> Option<&PageImage> {
+    self.page_variants.get(&(index, target.0, target.1))
   }
 
-  pub fn page_error(&self, index: usize) -> Option<&str> {
-    self.page_errors.get(index)?.as_deref()
+  pub fn page_error(&self, index: usize, target: (u32, u32)) -> Option<&str> {
+    self
+      .page_errors
+      .get(&(index, target.0, target.1))
+      .map(String::as_str)
   }
 
   pub fn slice_image(&self, spec: &PageSliceSpec) -> Option<&PageImage> {
@@ -531,9 +556,13 @@ impl App {
     self.scroll_layout = None;
     self.clamp_grid_start(capacity);
     self.apply_pending_progress_if_ready();
-    self.focused_page = self
-      .grid_start_page
-      .min(self.document.page_count.saturating_sub(1));
+    if self.focused_page < self.grid_start_page
+      || self.focused_page >= self.grid_start_page.saturating_add(capacity)
+    {
+      self.focused_page = self
+        .grid_start_page
+        .min(self.document.page_count.saturating_sub(1));
+    }
   }
 }
 

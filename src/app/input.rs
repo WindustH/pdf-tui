@@ -53,7 +53,7 @@ struct InputRedrawState {
   quit: bool,
   prompt: Option<PromptRedrawState>,
   completion: Option<CompletionRedrawState>,
-  key_hint_count: usize,
+  key_hints: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +81,14 @@ impl App {
       self.handle_confirm_input(input, tx);
       return force_redraw || before != self.input_redraw_state();
     }
+    if let Event::Mouse(mouse) = &input
+      && self
+        .overlay_areas
+        .iter()
+        .any(|area| area.contains((mouse.column, mouse.row).into()))
+    {
+      return false;
+    }
     match input {
       Event::Key(key) if self.prompt.is_some() => self.handle_prompt_key(key, tx),
       Event::Paste(value) if self.prompt.is_some() => self.handle_prompt_paste(&value),
@@ -95,10 +103,10 @@ impl App {
       Event::Mouse(mouse) => match mouse.kind {
         MouseEventKind::Down(MouseButton::Left)
           if self.view == ViewMode::Viewer
-            && self.layout.strategy == "slides"
-            && self.slide_thumbnail_at(mouse.column, mouse.row).is_some() =>
+            && self.layout.composition.is_some()
+            && self.follower_page_at(mouse.column, mouse.row).is_some() =>
         {
-          if let Some(page) = self.slide_thumbnail_at(mouse.column, mouse.row) {
+          if let Some(page) = self.follower_page_at(mouse.column, mouse.row) {
             self.handle_frame_navigation(|app| app.jump_to_page(page));
           }
         }
@@ -149,20 +157,6 @@ impl App {
       _ => {}
     }
     force_redraw || before != self.input_redraw_state()
-  }
-
-  fn slide_thumbnail_at(&self, column: u16, row: u16) -> Option<usize> {
-    crate::layout::slide_thumbnails(
-      self.viewport?,
-      &self.layout,
-      self.grid_start_page,
-      self.document.page_count,
-      |index| self.page_dimensions(index),
-      self.terminal_cell_pixels,
-    )
-    .into_iter()
-    .find(|(_, area)| crate::geometry::contains(*area, column, row))
-    .map(|(page, _)| page)
   }
 
   /// A click selects a bookmark; clicking the selected one toggles it.
@@ -285,7 +279,11 @@ impl App {
       quit: self.quit,
       prompt,
       completion,
-      key_hint_count: self.key_hints().len(),
+      key_hints: self
+        .key_hints()
+        .iter()
+        .map(|hint| (hint.key.clone(), hint.label.clone()))
+        .collect(),
     }
   }
 
@@ -553,7 +551,7 @@ impl App {
     }
   }
 
-  fn back_to_viewer(&mut self) {
+  pub(crate) fn back_to_viewer(&mut self) {
     self.view = ViewMode::Viewer;
     self.metadata_scroll = 0;
     self.selection.leave_view();

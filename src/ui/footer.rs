@@ -51,6 +51,7 @@ pub(super) fn draw_footer(
   if area.height == 0 {
     return;
   }
+  frame.render_widget(ratatui::widgets::Clear, area);
   let theme = &app.settings.theme;
   frame.render_widget(
     Block::default().style(

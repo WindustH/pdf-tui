@@ -106,7 +106,7 @@ pub(super) fn slice_spec_for_item(
     grid_cell_height: item.grid_height,
     viewport_width: viewport.width,
     viewport_height: viewport.height,
-    scroll_divisor: app.layout.scroll_divisor,
+    scroll_divisor: item.scroll_divisor,
   }
 }
 
@@ -136,17 +136,7 @@ pub(super) fn draw_page(
   if area.width == 0 || area.height == 0 {
     return true;
   }
-  let (image_area, mut target) = fitted_page_request(app, index, area);
-  // The page store retains one raster per page. Both slides panels must
-  // request the same raster size or they repeatedly replace each other.
-  if app.view == crate::app::ViewMode::Viewer
-    && app.layout.strategy == "slides"
-    && let Some(viewport) = app.viewport
-  {
-    let slot = layout::grid_slots(viewport, &app.layout)[0];
-    let (_, preview_target) = fitted_page_request(app, index, slot_content_area(slot, &app.layout));
-    target = preview_target;
-  }
+  let (image_area, target) = fitted_page_request(app, index, area);
   let (target_width, target_height) = target;
   if image_area.width == 0 || image_area.height == 0 {
     return true;
@@ -154,8 +144,17 @@ pub(super) fn draw_page(
   ctx
     .pages
     .request(index, target_width, target_height, ctx.tx);
-  let Some(page) = ready_page(frame, app, ctx, index, image_area) else {
-    return app.page_error(index).is_some();
+  if let Some(error) = app.page_error(index, target) {
+    draw_centered(
+      frame,
+      image_area,
+      format!("page {} failed\n{error}", index + 1),
+    );
+    return true;
+  }
+  let Some(page) = app.page_variant(index, target) else {
+    draw_image_pending(ctx, image_area, || format!("rendering page {}", index + 1));
+    return false;
   };
   let steps = viewer_overlay_steps(app, index, page);
   let (image, marks_ready) = overlaid_or_plain(ctx, page, &steps);
@@ -173,12 +172,13 @@ pub(super) fn ready_page<'a>(
   ctx: &mut DrawCtx<'_>,
   index: usize,
   area: Rect,
+  target: (u32, u32),
 ) -> Option<&'a PageImage> {
-  if let Some(error) = app.page_error(index) {
+  if let Some(error) = app.page_error(index, target) {
     draw_centered(frame, area, format!("page {} failed\n{error}", index + 1));
     return None;
   }
-  let page = app.page_image(index);
+  let page = app.page_variant(index, target);
   if page.is_none() {
     draw_image_pending(ctx, area, || format!("rendering page {}", index + 1));
   }
@@ -247,8 +247,13 @@ fn draw_rendered_image(
 
 /// Draws a grid slot's optional border and returns the area left for the
 /// page.
-pub(super) fn draw_page_frame(frame: &mut Frame, app: &App, slot: Rect) -> Rect {
-  if app.layout.show_border {
+pub(super) fn draw_page_frame_config(
+  frame: &mut Frame,
+  app: &App,
+  slot: Rect,
+  config: &crate::config::EffectiveLayoutConfig,
+) -> Rect {
+  if config.show_border {
     let theme = &app.settings.theme;
     frame.render_widget(
       Block::default()
@@ -257,7 +262,7 @@ pub(super) fn draw_page_frame(frame: &mut Frame, app: &App, slot: Rect) -> Rect 
       slot,
     );
   }
-  slot_content_area(slot, &app.layout)
+  slot_content_area(slot, config)
 }
 
 pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<String>) {
@@ -265,6 +270,21 @@ pub(super) fn draw_centered(frame: &mut Frame, area: Rect, text: impl Into<Strin
     Paragraph::new(text.into())
       .alignment(Alignment::Center)
       .wrap(Wrap { trim: true }),
+    area,
+  );
+}
+
+pub(super) fn draw_page_number(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+  let theme = &app.settings.theme;
+  let selected = index == app.focused_page;
+  frame.render_widget(
+    Paragraph::new(format!("{}{}", if selected { "> " } else { "" }, index + 1)).style(
+      Style::default().fg(theme.color(if selected {
+        &theme.foreground
+      } else {
+        &theme.muted
+      })),
+    ),
     area,
   );
 }

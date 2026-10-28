@@ -7,6 +7,7 @@ use std::{
   collections::{HashMap, HashSet},
   path::PathBuf,
   sync::Arc,
+  time::{Duration, Instant},
 };
 
 use img_tui::{NativeImageConfig, RenderMode};
@@ -43,6 +44,7 @@ pub struct RenderStore {
   /// Failed visible renders; they are not retried until the state is
   /// cleared.
   failures: HashMap<String, String>,
+  preload_failures: HashMap<String, Instant>,
   jobs: JobQueue<String, RenderJobPriority>,
   /// Inputs of queued or running jobs.
   job_inputs: HashMap<String, RenderJobInput>,
@@ -87,6 +89,7 @@ impl RenderStore {
         memory_compression,
       ),
       failures: HashMap::new(),
+      preload_failures: HashMap::new(),
       jobs: JobQueue::new(config.max_concurrent),
       job_inputs: HashMap::new(),
       visible_waits: HashSet::new(),
@@ -144,6 +147,12 @@ impl RenderStore {
       return cache_key;
     }
     let preload = priority.is_preload();
+    self
+      .preload_failures
+      .retain(|_, failed| failed.elapsed() < Duration::from_secs(5));
+    if preload && self.preload_failures.contains_key(&cache_key) {
+      return cache_key;
+    }
     if self.jobs.contains(&cache_key) {
       if !preload {
         self.visible_waits.insert(cache_key.clone());
@@ -203,7 +212,7 @@ impl RenderStore {
       let prepared_images = self.prepared_images.clone();
       let tx = tx.clone();
       tokio::spawn(async move {
-        let result = render_with_fallbacks(RenderJob {
+        let result = tokio::spawn(render_with_fallbacks(RenderJob {
           page: input.page,
           width: input.width,
           height: input.height,
@@ -213,8 +222,9 @@ impl RenderStore {
           native_config,
           modes,
           prepared_images,
-        })
-        .await;
+        }))
+        .await
+        .unwrap_or_else(|error| Err(format!("render task failed: {error}")));
         let _ = tx.send(E::from(RenderOutcome {
           cache_key,
           preload,
@@ -239,6 +249,7 @@ impl RenderStore {
   pub fn clear_state(&mut self) {
     self.memory.clear();
     self.failures.clear();
+    self.preload_failures.clear();
     self.jobs.clear();
     self.job_inputs.clear();
     self.visible_waits.clear();
@@ -262,6 +273,13 @@ impl RenderStore {
     tx: &mpsc::UnboundedSender<E>,
   ) -> RenderFinish {
     self.jobs.finish(&outcome.cache_key);
+    if outcome.preload && outcome.result.is_err() {
+      self
+        .preload_failures
+        .insert(outcome.cache_key.clone(), Instant::now());
+    } else {
+      self.preload_failures.remove(&outcome.cache_key);
+    }
     self.job_inputs.remove(&outcome.cache_key);
     let visible_wait = self.visible_waits.remove(&outcome.cache_key);
     let finish = match outcome.result {
@@ -296,6 +314,7 @@ impl RenderStore {
     hasher.update(b"pdf-tui-render-v1");
     hasher.update(page.path.to_string_lossy().as_bytes());
     hasher.update(page.page_index.to_le_bytes());
+    hasher.update(page.identity().as_bytes());
     hasher.update(page.size_bytes.to_le_bytes());
     hasher.update(page.modified_nanos.to_le_bytes());
     hasher.update(width.to_le_bytes());

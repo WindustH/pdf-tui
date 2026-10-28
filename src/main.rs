@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use framework_tui::PanicOrigin;
-use img_tui::{NativeImageConfig, RenderMode, TerminalCapability, capability, native_image};
+use img_tui::{NativeImageConfig, RenderMode, TerminalCapability, capability};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -53,7 +53,7 @@ struct Cli {
   /// PDF file to open.
   path: PathBuf,
 
-  /// Optional layout override: scroll <columns> <scroll_divisor> or grid <rows> <columns>.
+  /// Optional layout preset and arguments, e.g. scroll 1 16, grid 2 2, or slides 1 5.
   #[arg(trailing_var_arg = true)]
   layout: Vec<String>,
 }
@@ -126,6 +126,10 @@ async fn main() -> Result<()> {
   let page_store = PageStore::new(document.clone(), settings.config.render.max_concurrent);
 
   let (tx, rx) = mpsc::unbounded_channel::<AsyncEvent>();
+  let signal_tx = tx.clone();
+  framework_tui::watch_termination_signals(move |_| {
+    let _ = signal_tx.send(AsyncEvent::Terminate);
+  })?;
   let input = background::spawn_input_reader(tx.clone())?;
   background::spawn_file_watcher(tx.clone(), document.path.clone(), &settings.config.behavior);
 
@@ -140,16 +144,6 @@ async fn main() -> Result<()> {
     passthrough: terminal_capability.passthrough().map(str::to_string),
     kitty_unicode_placeholders: terminal_capability.kitty_unicode_placeholders(),
   };
-  let protocol_reset = render_modes
-    .contains(&RenderMode::Kitty)
-    .then(|| {
-      native_image::erase_sequence(
-        RenderMode::Kitty,
-        native_config.passthrough.as_deref(),
-        None,
-      )
-    })
-    .flatten();
   let pipeline = ImagePipeline {
     pages: page_store,
     overlays: OverlayStore::new(app.settings.cache_dir.clone(), &app.settings.config.render),
@@ -172,7 +166,7 @@ async fn main() -> Result<()> {
       );
     }
   });
-  let mut tui = Tui::new(protocol_reset)?;
+  let mut tui = Tui::new(None)?;
   let mut session = Session::new(app, pipeline, tx, rx, input);
   let result = session.run(&mut tui).await;
   tui.restore()?;

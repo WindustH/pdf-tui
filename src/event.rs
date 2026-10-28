@@ -7,6 +7,7 @@ use crate::{
 
 #[derive(Debug)]
 pub enum AsyncEvent {
+  Terminate,
   Input { event: Event, generation: u64 },
   Page(PageOutcome),
   Render(RenderOutcome),

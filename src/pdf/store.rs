@@ -1,7 +1,10 @@
 //! Scheduling of page rasterization: whole-page PNGs and scroll slices,
 //! visible requests first, with results reported as `AsyncEvent::Page`.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+  collections::{HashMap, HashSet},
+  time::{Duration, Instant},
+};
 
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -21,9 +24,10 @@ pub struct PageStore {
   /// Queued or running jobs a visible request is waiting for; finishing one
   /// triggers a redraw even when it started as a preload.
   visible_waits: HashSet<PageJob>,
-  /// Last finished whole-page request per page.
-  completed: HashMap<usize, PageRequestKey>,
+  /// Finished raster variants, shared by panels with independent sizes.
+  completed: HashSet<PageRequestKey>,
   completed_slices: HashSet<PageSliceSpec>,
+  preload_failures: HashMap<PageJob, Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,8 +69,9 @@ impl PageStore {
       document,
       jobs: JobQueue::new(max_concurrent),
       visible_waits: HashSet::new(),
-      completed: HashMap::new(),
+      completed: HashSet::new(),
       completed_slices: HashSet::new(),
+      preload_failures: HashMap::new(),
     }
   }
 
@@ -75,6 +80,7 @@ impl PageStore {
     self.visible_waits.clear();
     self.completed.clear();
     self.completed_slices.clear();
+    self.preload_failures.clear();
   }
 
   pub fn cancel_preloads(&mut self) {
@@ -149,7 +155,7 @@ impl PageStore {
     priority: PageJobPriority,
     tx: &mpsc::UnboundedSender<E>,
   ) {
-    if self.completed.get(&key.page_index) == Some(&key) {
+    if self.completed.contains(&key) {
       return;
     }
     self.request_job(PageJob::Page(key), priority, tx);
@@ -161,6 +167,12 @@ impl PageStore {
     priority: PageJobPriority,
     tx: &mpsc::UnboundedSender<E>,
   ) {
+    self
+      .preload_failures
+      .retain(|_, failed| failed.elapsed() < Duration::from_secs(5));
+    if priority.is_preload() && self.preload_failures.contains_key(&job) {
+      return;
+    }
     if job.page_index() >= self.document.page_count {
       return;
     }
@@ -218,11 +230,16 @@ impl PageStore {
       )),
     };
     self.jobs.finish(&job);
+    if page.preload && page.result.is_err() {
+      self.preload_failures.insert(job, Instant::now());
+    } else {
+      self.preload_failures.remove(&job);
+    }
     let visible_wait = self.visible_waits.remove(&job);
     if completed {
       match job {
         PageJob::Page(key) => {
-          self.completed.insert(key.page_index, key);
+          self.completed.insert(key);
         }
         PageJob::Slice(spec) => {
           self.completed_slices.insert(spec);
@@ -257,34 +274,35 @@ fn spawn_page_job<E: From<PageOutcome> + Send + 'static>(
   tx: mpsc::UnboundedSender<E>,
 ) {
   tokio::spawn(async move {
-    let (result, slice, key) = match job {
-      PageJob::Page(key) => {
-        let result = if preload {
-          preload_page_image(&document, key).await
-        } else {
-          render_page_image(&document, key).await
-        };
-        (result, None, key)
-      }
-      PageJob::Slice(spec) => {
-        let result = if preload {
-          preload_page_slice_image(&document, spec).await
-        } else {
-          render_page_slice_image(&document, spec).await
-        };
-        let key = page_key(spec.page_index, spec.target_width, spec.target_height);
-        (result, Some(spec), key)
-      }
+    let (slice, key) = match job {
+      PageJob::Page(key) => (None, key),
+      PageJob::Slice(spec) => (
+        Some(spec),
+        page_key(spec.page_index, spec.target_width, spec.target_height),
+      ),
     };
+    let source_size_bytes = document.size_bytes;
+    let source_modified_nanos = document.modified_nanos;
+    let result = tokio::spawn(async move {
+      match job {
+        PageJob::Page(key) if preload => preload_page_image(&document, key).await,
+        PageJob::Page(key) => render_page_image(&document, key).await,
+        PageJob::Slice(spec) if preload => preload_page_slice_image(&document, spec).await,
+        PageJob::Slice(spec) => render_page_slice_image(&document, spec).await,
+      }
+      .map_err(|error| error.to_string())
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("page task failed: {error}")));
     let _ = tx.send(E::from(PageOutcome {
-      source_size_bytes: document.size_bytes,
-      source_modified_nanos: document.modified_nanos,
+      source_size_bytes,
+      source_modified_nanos,
       page_index: key.page_index,
       target_width: key.target_width,
       target_height: key.target_height,
       slice,
       preload,
-      result: result.map_err(|error| error.to_string()),
+      result,
     }));
   });
 }

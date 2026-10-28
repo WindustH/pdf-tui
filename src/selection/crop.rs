@@ -95,13 +95,13 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
       label,
     )
   ));
-  if img_tui::cache::paths::contains(&path) {
+  if cache::valid_cached_image(&path) {
     return page_image_from_path(selection.page_index, path, None);
   }
   let _lock = cache::acquire_cache_file_lock(&path)
     .await
     .map_err(|error| format!("failed to lock selection cache {}: {error}", path.display()))?;
-  if img_tui::cache::paths::contains(&path) {
+  if cache::valid_cached_image(&path) {
     return page_image_from_path(selection.page_index, path, None);
   }
   if let Ok(crop) = crate::pdf::render_uncached_selection_image_at(

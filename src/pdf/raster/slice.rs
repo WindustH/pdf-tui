@@ -1,18 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use tokio::fs;
 use tracing::debug;
 
-use crate::cache;
 use crate::layout::grid_slice_span;
 
 use super::super::{
-  document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument, modified_nanos},
+  document::{PageImage, PageSliceMetadata, PageSliceSpec, PdfDocument},
   store::PageRequestKey,
 };
 use super::{
-  file_cache::{acquire_page_image_lock, image_dimensions, write_png_atomic},
+  file_cache::{acquire_page_image_lock, read_cached_page_image, write_png_atomic},
   render_page_image_with_batch_mode,
 };
 
@@ -58,7 +57,6 @@ async fn render_page_slice_image_with_batch_mode(
   let cache_key = document.slice_cache_key(spec);
   let page_number = spec.page_index + 1;
   let output_path = page_slice_output_path(document, spec, &cache_key);
-  let metadata_path = output_path.with_extension("toml");
 
   let full_width = full_page.width.max(1);
   let full_height = full_page.height.max(1);
@@ -92,52 +90,18 @@ async fn render_page_slice_image_with_batch_mode(
     cache_key: cache_key.clone(),
   };
 
-  if !img_tui::cache::paths::contains(&output_path) {
+  let mut image = read_cached_page_image(spec.page_index, &output_path).await?;
+  if image.is_none() {
     let _lock = acquire_page_image_lock(&page_slice_group_lock_path(document, spec)).await?;
-    if !img_tui::cache::paths::contains(&output_path) {
+    image = read_cached_page_image(spec.page_index, &output_path).await?;
+    if image.is_none() {
       render_missing_page_slice_group(document, &full_page, spec).await?;
+      image = read_cached_page_image(spec.page_index, &output_path).await?;
     }
   }
-
-  if img_tui::cache::paths::contains(&output_path) {
-    debug!(
-      page = page_number,
-      slice = spec.slice_index + 1,
-      slice_count = spec.slice_count,
-      path = %output_path.display(),
-      "using cached pdf page slice image"
-    );
-  }
-
-  // The metadata is derived from the cache key, so an existing file is
-  // already correct; rewriting it on every cache hit is wasted I/O.
-  if !img_tui::cache::paths::contains(&metadata_path) {
-    write_slice_metadata(&metadata_path, &metadata).await?;
-  }
-
-  let output_path = img_tui::cache::paths::materialize(&output_path)?;
-  let (width, height) = image_dimensions(&output_path)
-    .await
-    .with_context(|| format!("failed to read {}", output_path.display()))?;
-  let file_metadata = fs::metadata(&output_path)
-    .await
-    .with_context(|| format!("failed to stat {}", output_path.display()))?;
-  Ok(PageImage {
-    page_index: spec.page_index,
-    path: output_path,
-    width,
-    height,
-    size_bytes: file_metadata.len(),
-    modified_nanos: modified_nanos(&file_metadata),
-    slice: Some(metadata),
-  })
-}
-
-async fn write_slice_metadata(path: &Path, metadata: &PageSliceMetadata) -> Result<()> {
-  let encoded = toml::to_string_pretty(metadata).context("failed to encode slice metadata")?;
-  cache::write_bytes_atomic(path, encoded.as_bytes())
-    .await
-    .with_context(|| format!("failed to write {}", path.display()))
+  let mut image = image.context("slice regeneration produced no readable image")?;
+  image.slice = Some(metadata);
+  Ok(image)
 }
 
 async fn render_missing_page_slice_group(
@@ -193,55 +157,16 @@ async fn render_missing_page_slice_group(
       slice_height,
       "writing pdf page slice image"
     );
-    let slice = full_image.crop_imm(0, slice_y, full_width, slice_height);
+    let slice = img_tui::slicing::PixelRegion {
+      x: 0,
+      y: slice_y,
+      width: full_width,
+      height: slice_height,
+    }
+    .crop(&full_image)?;
     write_png_atomic(slice, output_path.clone()).await?;
-    let metadata = page_slice_metadata(
-      document,
-      sibling,
-      full_width,
-      full_height,
-      slice_y,
-      slice_height,
-      cache_key,
-    );
-    write_slice_metadata(&output_path.with_extension("toml"), &metadata).await?;
   }
   Ok(())
-}
-
-fn page_slice_metadata(
-  document: &PdfDocument,
-  spec: PageSliceSpec,
-  full_width: u32,
-  full_height: u32,
-  slice_y: u32,
-  slice_height: u32,
-  cache_key: String,
-) -> PageSliceMetadata {
-  PageSliceMetadata {
-    source_pdf: document.path.to_string_lossy().into_owned(),
-    source_size_bytes: document.size_bytes,
-    source_modified_nanos: document.modified_nanos.to_string(),
-    page_index: spec.page_index,
-    page_number: spec.page_index + 1,
-    slice_index: spec.slice_index,
-    slice_count: spec.slice_count,
-    full_pixel_width: full_width,
-    full_pixel_height: full_height,
-    slice_x: 0,
-    slice_y,
-    slice_width: full_width,
-    slice_height,
-    cell_width: spec.cell_width,
-    cell_height: spec.cell_height,
-    full_cell_width: spec.full_cell_width,
-    full_cell_height: spec.full_cell_height,
-    grid_cell_height: spec.grid_cell_height,
-    viewport_width: spec.viewport_width,
-    viewport_height: spec.viewport_height,
-    scroll_divisor: spec.scroll_divisor,
-    cache_key,
-  }
 }
 
 fn sibling_slice_specs(spec: PageSliceSpec) -> Vec<PageSliceSpec> {

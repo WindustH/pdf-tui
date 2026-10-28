@@ -7,18 +7,35 @@ use super::{DrawCtx, page::draw_slice, preload};
 
 pub(super) fn draw_scroll(frame: &mut Frame, app: &mut App, ctx: &mut DrawCtx<'_>, area: Rect) {
   app.prepare_scroll_layout(area);
-  let all_ready = draw_visible_slices(frame, app, ctx, area);
+  let all_ready = app.scroll_layout().is_none_or(|layout| {
+    draw_visible_slices(
+      frame,
+      app,
+      ctx,
+      area,
+      layout,
+      app.scroll as usize,
+      app.layout.scroll_divisor,
+    )
+  });
   app.finish_frame_render_pass(all_ready);
 }
 
-fn draw_visible_slices(frame: &mut Frame, app: &App, ctx: &mut DrawCtx<'_>, area: Rect) -> bool {
-  let Some(scroll_layout) = app.scroll_layout() else {
-    return true;
-  };
-  let divisor = app.layout.scroll_divisor;
+pub(super) fn draw_visible_slices(
+  frame: &mut Frame,
+  app: &App,
+  ctx: &mut DrawCtx<'_>,
+  area: Rect,
+  scroll_layout: &crate::layout::ScrollLayout,
+  start: usize,
+  divisor: u16,
+) -> bool {
   let mut all_ready = true;
   let mut visible_summary = Vec::new();
-  for placed in scroll_layout.placed_items(app.scroll as usize, area, divisor) {
+  for placed in scroll_layout.placed_items(start, area, divisor) {
+    if !placed.label_area.is_empty() {
+      super::page::draw_page_number(frame, app, placed.item.page_index, placed.label_area);
+    }
     let ready = draw_slice(frame, app, ctx, placed.item, placed.area, area);
     all_ready &= ready;
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -33,7 +50,7 @@ fn draw_visible_slices(frame: &mut Frame, app: &App, ctx: &mut DrawCtx<'_>, area
       ));
     }
   }
-  let visible_rows = scroll_layout.visible_rows(app.scroll as usize, area.height, divisor);
+  let visible_rows = scroll_layout.visible_rows(start, area.height, divisor);
   preload::preload_scroll_neighbors(
     app,
     &mut ctx.preload(),
@@ -42,7 +59,7 @@ fn draw_visible_slices(frame: &mut Frame, app: &App, ctx: &mut DrawCtx<'_>, area
     visible_rows.clone(),
   );
   debug!(
-    scroll = app.scroll,
+    scroll = start,
     focused_page = app.focused_page + 1,
     viewport_width = area.width,
     viewport_height = area.height,

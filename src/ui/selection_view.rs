@@ -1,4 +1,4 @@
-use ratatui::{Frame, layout::Rect, widgets::Block, widgets::Paragraph};
+use ratatui::{Frame, layout::Rect, widgets::Block};
 
 use crate::{app::App, geometry::fitted_page_area, overlay::OverlayStep, selection};
 
@@ -10,6 +10,14 @@ use super::{
 };
 
 pub(super) fn draw_selection(frame: &mut Frame, app: &mut App, ctx: &mut DrawCtx<'_>, area: Rect) {
+  // Refreshing a document or cancelling its last draft can invalidate the
+  // preview while this view is open. Restore the document, not an empty pane.
+  if app.current_selection().is_none() {
+    app.back_to_viewer();
+    app.set_message("no selection");
+    super::draw_viewer(frame, app, ctx, area);
+    return;
+  }
   app.update_viewport(area);
   let ready = draw_selection_preview(frame, app, ctx, area);
   preload::preload_selection_history(app, &mut ctx.preload(), area);
@@ -28,7 +36,6 @@ fn draw_selection_preview(
   }
   frame.render_widget(Block::default().style(base_style(app)), area);
   let Some(selection) = app.current_selection().copied() else {
-    frame.render_widget(Paragraph::new("No selection").style(base_style(app)), area);
     return true;
   };
   let selection_index = app.selection.index.unwrap_or(0);

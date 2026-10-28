@@ -115,7 +115,11 @@ fn app_config_toml(config: &AppConfig) -> Result<String> {
 
 fn comment_table_key(table: &str) -> String {
   if table.starts_with("layout.presets.") {
-    "layout.presets.*".to_string()
+    let suffix = table.strip_prefix("layout.presets.").unwrap_or("");
+    suffix.split_once('.').map_or_else(
+      || "layout.presets.*".to_string(),
+      |(_, nested)| format!("layout.presets.*.{nested}"),
+    )
   } else {
     table.to_string()
   }
@@ -123,6 +127,31 @@ fn comment_table_key(table: &str) -> String {
 
 fn pdf_config_comment(key: &str) -> Option<&'static str> {
   match key {
+    "layout.show_page_numbers" | "layout.presets.*.show_page_numbers" => {
+      Some("Show a one-based item number above each page/image; independent of borders.")
+    }
+    "layout.presets.*.composition" => {
+      Some("Combine two ordinary layout presets; each keeps its own geometry and cache sizes.")
+    }
+    "layout.presets.*.composition.direction" => {
+      Some("horizontal: left/right; vertical: top/bottom.")
+    }
+    "layout.presets.*.composition.ratio" => {
+      Some("First and second panel size weights, both positive. Gap is excluded before splitting.")
+    }
+    "layout.presets.*.composition.gap" => {
+      Some("Blank columns (horizontal) or rows (vertical) between panels. Zero is allowed.")
+    }
+    "layout.presets.*.composition.primary" => {
+      Some("first or second: keyboard/wheel control this panel; the other follows its progress.")
+    }
+    "layout.presets.*.composition.first.layout" | "layout.presets.*.composition.second.layout" => {
+      Some("Name of an ordinary layout preset; nested compositions are not supported.")
+    }
+    "layout.presets.*.composition.first.args" | "layout.presets.*.composition.second.args" => {
+      Some("Arguments for the referenced preset, in that preset's params order.")
+    }
+
     "layout" => Some("Layout defaults and the startup preset selection."),
     "layout.active" => Some("Layout preset selected on startup."),
     "layout.active_args" => Some(
@@ -133,9 +162,9 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "layout.show_border" => Some("Draw borders around rendered pages by default."),
     "layout.padding" => Some("Default inner padding around rendered pages."),
     "layout.presets.*" => Some("Named layout preset used by the :layout command."),
-    "layout.presets.*.strategy" => {
-      Some("Layout algorithm used by this preset: scroll, grid, or slides.")
-    }
+    "layout.presets.*.strategy" => Some(
+      "Layout algorithm used by this preset: scroll, grid, or composite (slides is a composite preset).",
+    ),
     "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
     "layout.presets.*.columns" => Some("Default number of page columns."),
     "layout.presets.*.left_ratio" => {

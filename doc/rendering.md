@@ -55,7 +55,7 @@ bookmark, search, and selection views list entries.
 Results are cached on disk, so revisited pages appear quickly, also in later
 sessions:
 
-- SQLite `pages` namespace: page and slice PNGs, plus a `.toml` description of each slice
+- SQLite `pages` namespace: page and slice PNGs (slice geometry stays in memory)
 - SQLite `render` namespace: zstd-compressed terminal output
 - SQLite `text` namespace: search indexes
 - SQLite `search-highlight` and `selection` namespaces: marked copies and selection crops
@@ -76,3 +76,8 @@ The selection view and `Y` render just the selected region: Poppler with
 reliable crop option, so a temporary full page is rendered and cropped.
 Previews are rendered at the size the terminal area needs;
 `render.selection_image_max_pixels` limits only the copied PNG.
+
+Derived image keys include the page and slice identity even when two slices have identical pixels. Unreadable cached page, slice, search-highlight, and selection images are evicted and regenerated. Failed speculative page/render jobs wait five seconds before retrying; visible requests bypass that delay. Navigation and resize discard queued preloads for the old viewport.
+
+Command prompts, completion lists, status messages, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Permanent navigation (the music tab bar and Calibre search header) keeps its existing position.
+Kitty Unicode images are occluded through text cells without changing image geometry. Pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.

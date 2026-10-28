@@ -172,6 +172,7 @@ fn prepared_cache_key(
   hasher.update(b"pdf-tui-prepared-image-v2");
   hasher.update(page.path.to_string_lossy().as_bytes());
   hasher.update(page.page_index.to_le_bytes());
+  hasher.update(page.identity().as_bytes());
   hasher.update(page.size_bytes.to_le_bytes());
   hasher.update(page.modified_nanos.to_le_bytes());
   hasher.update(prepared_width.to_le_bytes());

@@ -147,14 +147,27 @@ fn highlighted_context_spans(
   let text = &result.display_text;
   let start = floor_char_boundary(text, result.display_match_start);
   let end = floor_char_boundary(text, result.display_match_end).max(start);
-  let window_start = context_window_start(text, start, width);
-  let window_end = context_window_end(text, window_start, width);
+  let ellipsis = if width >= 7 { "..." } else { "…" };
+  let reserve = if width >= 7 { 6 } else { 2 };
+  if width <= reserve {
+    return vec![Span::styled(
+      framework_tui::text::truncate_to_width(text, width).into_owned(),
+      base,
+    )];
+  }
+  let content_width = if framework_tui::text::display_width(text) > width {
+    width - reserve
+  } else {
+    width
+  };
+  let window_start = context_window_start(text, start, content_width);
+  let window_end = context_window_end(text, window_start, content_width);
   let prefix = text_slice(text, window_start, start.min(window_end));
   let matched = text_slice(text, start.max(window_start), end.min(window_end));
   let suffix = text_slice(text, end.max(window_start), window_end);
   let mut spans = Vec::new();
   if window_start > 0 {
-    spans.push(Span::styled("...", base));
+    spans.push(Span::styled(ellipsis, base));
   }
   if !prefix.is_empty() {
     spans.push(Span::styled(prefix, base));
@@ -166,7 +179,7 @@ fn highlighted_context_spans(
     spans.push(Span::styled(suffix, base));
   }
   if window_end < text.len() {
-    spans.push(Span::styled("...", base));
+    spans.push(Span::styled(ellipsis, base));
   }
   spans
 }
@@ -201,8 +214,17 @@ fn draw_highlighted_page(
   ctx
     .pages
     .request(result.page_index, target_width, target_height, ctx.tx);
-  let Some(page) = ready_page(frame, app, ctx, result.page_index, image_area) else {
-    return app.page_error(result.page_index).is_some();
+  let Some(page) = ready_page(
+    frame,
+    app,
+    ctx,
+    result.page_index,
+    image_area,
+    (target_width, target_height),
+  ) else {
+    return app
+      .page_error(result.page_index, (target_width, target_height))
+      .is_some();
   };
   let steps = [OverlayStep::SearchHighlight(result.clone())];
   let (highlighted, highlight_ready) = match overlaid(ctx, page, &steps) {

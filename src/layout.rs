@@ -16,6 +16,8 @@ pub struct ScrollItem {
   /// slicing grid is derived from it so every page cuts at the same
   /// absolute cell boundaries.
   pub grid_height: u16,
+  pub scroll_divisor: u16,
+  pub label_height: u16,
   pub row_index: usize,
   pub x: u16,
   pub y: u32,
@@ -45,6 +47,7 @@ pub struct ScrollLayout {
 pub struct PlacedScrollItem {
   pub item: ScrollItem,
   pub area: Rect,
+  pub label_area: Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,22 +58,21 @@ struct ScrollWidthScore {
 
 impl ScrollLayout {
   /// Rows shown when `start_row` is the top row: consecutive rows that fit
-  /// the viewport, at most `scroll_divisor` of them, and always at least
+  /// the viewport, and always at least
   /// one. Empty only for an empty layout or a zero-height viewport.
   pub fn visible_rows(
     &self,
     start_row: usize,
     viewport_height: u16,
-    scroll_divisor: u16,
+    _scroll_divisor: u16,
   ) -> Range<usize> {
     if self.rows.is_empty() || viewport_height == 0 {
       return 0..0;
     }
     let start = start_row.min(self.rows.len() - 1);
-    let max_rows = usize::from(scroll_divisor.max(1));
     let mut end = start + 1;
     let mut used = u32::from(self.rows[start].height);
-    while end < self.rows.len() && end - start < max_rows {
+    while end < self.rows.len() {
       let candidate =
         used + u32::from(self.rows[end - 1].gap_after) + u32::from(self.rows[end].height);
       if candidate > u32::from(viewport_height) {
@@ -139,9 +141,15 @@ impl ScrollLayout {
       for item in row.items.iter().filter_map(|index| self.items.get(*index)) {
         placed.push(PlacedScrollItem {
           item: *item,
-          area: Rect::new(
+          label_area: Rect::new(
             viewport.x.saturating_add(item.x),
             row_y,
+            item.width.min(viewport.width.saturating_sub(item.x)),
+            item.label_height,
+          ),
+          area: Rect::new(
+            viewport.x.saturating_add(item.x),
+            row_y.saturating_add(item.label_height),
             item.width.min(viewport.width.saturating_sub(item.x)),
             item.height,
           ),
@@ -214,7 +222,11 @@ impl ScrollLayoutBuilder<'_> {
     let gap_x = self.config.gap_x;
     let gap_y = self.config.gap_y;
     let x_offset = centered_offset(self.viewport_width, columns, page_width, gap_x);
-    let slice_height_limit = slice_height_limit(self.viewport_height, self.config.scroll_divisor);
+    let label_height = u16::from(self.config.show_page_numbers && self.viewport_height > 1);
+    let slice_height_limit = slice_height_limit(
+      self.viewport_height.saturating_sub(label_height),
+      self.config.scroll_divisor,
+    );
     let mut items = Vec::new();
     let mut rows = Vec::new();
     let mut y = 0_u32;
@@ -251,12 +263,15 @@ impl ScrollLayoutBuilder<'_> {
           if height == 0 {
             continue;
           }
-          row_height = row_height.max(height);
+          let label_height = if slice_row == 0 { label_height } else { 0 };
+          row_height = row_height.max(height.saturating_add(label_height));
           items.push(ScrollItem {
             page_index: index,
             slice_index: slice_row,
             slice_count: max_slice_count,
             grid_height,
+            scroll_divisor: self.config.scroll_divisor,
+            label_height,
             row_index,
             x: x_offset
               .saturating_add((col as u16).saturating_mul(page_width.saturating_add(gap_x))),
@@ -303,7 +318,17 @@ impl ScrollLayoutBuilder<'_> {
       average: f64::NEG_INFINITY,
       minimum: f64::NEG_INFINITY,
     };
-    for page_width in 1..=max_page_width {
+    // Large documents use a bounded set of width candidates; building all
+    // rows for every terminal column would stall resize on thousands of pages.
+    let stride = if self.dimensions.len() > 256 {
+      usize::from(max_page_width).div_ceil(32).max(1)
+    } else {
+      1
+    };
+    for page_width in (1..=max_page_width)
+      .step_by(stride)
+      .chain(std::iter::once(max_page_width))
+    {
       let score = self.width_score(&self.build(page_width));
       if better_scroll_width(score, page_width, best_score, best_width) {
         best_width = page_width;
@@ -388,16 +413,11 @@ pub fn grid_slice_span(
   slice_index: u16,
   full_height: u16,
 ) -> (u32, u16) {
-  let slice_count = slice_count.max(1);
-  let slice_index = slice_index.min(slice_count.saturating_sub(1));
-  let grid = u32::from(grid_height.max(1));
-  let full = u32::from(full_height.max(1));
-  let start = (grid * u32::from(slice_index) / u32::from(slice_count)).min(full);
-  let end = (grid * u32::from(slice_index.saturating_add(1)) / u32::from(slice_count)).min(full);
-  (
-    start,
-    end.saturating_sub(start).min(u32::from(u16::MAX)) as u16,
-  )
+  img_tui::slicing::SliceGrid::Even {
+    height: grid_height.max(1),
+    count: slice_count.max(1),
+  }
+  .span(slice_index.min(slice_count.max(1) - 1), full_height.max(1))
 }
 
 pub fn page_height_cells(
@@ -416,9 +436,6 @@ pub fn page_height_cells(
 
 /// Slot rectangles of a grid layout, row by row.
 pub fn grid_slots(area: Rect, config: &EffectiveLayoutConfig) -> Vec<Rect> {
-  if config.strategy == "slides" {
-    return vec![slides_panels(area, config).1];
-  }
   let rows = config.rows.max(1) as usize;
   let columns = config.columns.max(1) as usize;
   let gap_x = config.gap_x;
@@ -430,18 +447,21 @@ pub fn grid_slots(area: Rect, config: &EffectiveLayoutConfig) -> Vec<Rect> {
   let mut slots = Vec::with_capacity(rows * columns);
   for row in 0..rows {
     for col in 0..columns {
-      slots.push(Rect {
-        x: area
-          .x
-          .saturating_add(x_offset)
-          .saturating_add((col as u16).saturating_mul(cell_width.saturating_add(gap_x))),
-        y: area
-          .y
-          .saturating_add(y_offset)
-          .saturating_add((row as u16).saturating_mul(cell_height.saturating_add(gap_y))),
-        width: cell_width,
-        height: cell_height,
-      });
+      slots.push(
+        Rect {
+          x: area
+            .x
+            .saturating_add(x_offset)
+            .saturating_add((col as u16).saturating_mul(cell_width.saturating_add(gap_x))),
+          y: area
+            .y
+            .saturating_add(y_offset)
+            .saturating_add((row as u16).saturating_mul(cell_height.saturating_add(gap_y))),
+          width: cell_width,
+          height: cell_height,
+        }
+        .intersection(area),
+      );
     }
   }
   slots
@@ -466,97 +486,4 @@ fn centered_offset(total: u16, count: usize, item: u16, gap: u16) -> u16 {
     .saturating_mul(item)
     .saturating_add(gap.saturating_mul(count.saturating_sub(1) as u16));
   total.saturating_sub(used) / 2
-}
-
-/// Reserve a blank column (or the configured horizontal gap) between panels.
-pub fn slides_panels(area: Rect, config: &EffectiveLayoutConfig) -> (Rect, Rect) {
-  let gap = config.gap_x.max(1).min(area.width);
-  let available = Rect::new(area.x, area.y, area.width.saturating_sub(gap), area.height);
-  let (left, mut right) =
-    crate::geometry::split_panels(available, config.left_ratio, config.right_ratio);
-  right.x = right.x.saturating_add(gap);
-  (left, right)
-}
-
-/// Whole-page thumbnails in a single scrolling column, centered on the current page.
-/// Shared by drawing and mouse hit testing.
-pub fn slide_thumbnails(
-  area: Rect,
-  config: &EffectiveLayoutConfig,
-  focused: usize,
-  count: usize,
-  dimensions: impl Fn(usize) -> Option<(u32, u32)>,
-  cell_pixels: Option<(u16, u16)>,
-) -> Vec<(usize, Rect)> {
-  let (panel, _) = slides_panels(area, config);
-  if panel.width == 0 || panel.height == 0 || count == 0 {
-    return Vec::new();
-  }
-  let inset = config.padding.saturating_add(u16::from(config.show_border));
-  let height = |page| {
-    page_height_cells(
-      panel.width.saturating_sub(inset.saturating_mul(2)),
-      dimensions(page),
-      cell_pixels,
-    )
-    .saturating_add(inset.saturating_mul(2))
-    .saturating_add(u16::from(!config.show_border))
-    .min(panel.height)
-    .max(1)
-  };
-  let focused = focused.min(count - 1);
-  let mut start = focused;
-  let mut used = height(focused);
-  while start > 0 {
-    let next = used
-      .saturating_add(config.gap_y)
-      .saturating_add(height(start - 1));
-    let target_top = panel.height.saturating_sub(height(focused)) / 2;
-    if next > panel.height
-      || next.saturating_sub(height(focused)).abs_diff(target_top)
-        > used.saturating_sub(height(focused)).abs_diff(target_top)
-    {
-      break;
-    }
-    start -= 1;
-    used = next;
-  }
-  let mut end = focused + 1;
-  while end < count {
-    let next = used
-      .saturating_add(config.gap_y)
-      .saturating_add(height(end));
-    if next > panel.height {
-      break;
-    }
-    used = next;
-    end += 1;
-  }
-  while start > 0 {
-    let next = used
-      .saturating_add(config.gap_y)
-      .saturating_add(height(start - 1));
-    if next > panel.height {
-      break;
-    }
-    start -= 1;
-    used = next;
-  }
-  let before = (start..focused).fold(0_u16, |sum, page| {
-    sum
-      .saturating_add(height(page))
-      .saturating_add(config.gap_y)
-  });
-  let centered_top = panel.height.saturating_sub(height(focused)) / 2;
-  let offset = centered_top
-    .saturating_sub(before)
-    .min(panel.height.saturating_sub(used));
-  let mut y = panel.y.saturating_add(offset);
-  (start..end)
-    .map(|page| {
-      let slot = Rect::new(panel.x, y, panel.width, height(page));
-      y = y.saturating_add(slot.height).saturating_add(config.gap_y);
-      (page, slot)
-    })
-    .collect()
 }

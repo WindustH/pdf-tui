@@ -109,7 +109,7 @@ impl App {
 
   pub(super) fn page_down(&mut self) {
     if self.layout.is_scroll() {
-      self.scroll_by_rows(i32::from(self.layout.scroll_divisor.max(1)));
+      self.scroll_screen(true);
     } else {
       self.shift_grid_window(self.grid_capacity_step());
     }
@@ -117,10 +117,45 @@ impl App {
 
   pub(super) fn page_up(&mut self) {
     if self.layout.is_scroll() {
-      self.scroll_by_rows(-i32::from(self.layout.scroll_divisor.max(1)));
+      self.scroll_screen(false);
     } else {
       self.shift_grid_window(-self.grid_capacity_step());
     }
+  }
+
+  fn scroll_screen(&mut self, forward: bool) {
+    let Some(cached) = &self.scroll_layout else {
+      return;
+    };
+    let layout = cached.layout();
+    let height = cached.viewport_height();
+    let start = self.scroll as usize;
+    let target = if forward {
+      layout
+        .visible_rows(start, height, self.layout.scroll_divisor)
+        .end
+    } else {
+      let mut target = start;
+      let mut used = 0_u32;
+      while target > 0 {
+        let row = &layout.rows[target - 1];
+        let next = used
+          + u32::from(row.height)
+          + if target < start {
+            u32::from(row.gap_after)
+          } else {
+            0
+          };
+        if target < start && next > u32::from(height) {
+          break;
+        }
+        used = next;
+        target -= 1;
+      }
+      target
+    };
+    self.scroll = (target as u32).min(self.max_scroll());
+    self.update_focus_from_scroll();
   }
 
   pub(super) fn next_page(&mut self) {

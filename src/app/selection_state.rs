@@ -75,13 +75,13 @@ impl SelectionState {
 impl App {
   pub(super) fn enter_selection_view(&mut self) {
     self.commit_selection_draft();
-    self.view = ViewMode::Selection;
-    self.clear_frame_navigation_lock();
     self.key_dispatcher.clear();
-    if self.selection.index.is_none() && !self.selection.history.is_empty() {
+    if self.current_selection().is_none() && !self.selection.history.is_empty() {
       self.selection.index = Some(self.selection.history.len().saturating_sub(1));
     }
     if let Some(selection) = self.current_selection().copied() {
+      self.view = ViewMode::Selection;
+      self.clear_frame_navigation_lock();
       self.focused_page = selection
         .page_index
         .min(self.document.page_count.saturating_sub(1));

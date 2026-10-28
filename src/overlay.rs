@@ -140,8 +140,10 @@ impl OverlayStore {
       preload,
       "overlay requested"
     );
-    tokio::task::spawn_blocking(move || {
-      let result = job.apply(base, &steps);
+    tokio::spawn(async move {
+      let result = tokio::task::spawn_blocking(move || job.apply(base, &steps))
+        .await
+        .unwrap_or_else(|error| Err(format!("overlay task failed: {error}")));
       let _ = tx.send(E::from(OverlayOutcome {
         key,
         preload,

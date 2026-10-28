@@ -11,7 +11,7 @@ impl App {
       .flatten()
   }
 
-  pub(super) fn current_progress(&self) -> Option<f64> {
+  pub(crate) fn current_progress(&self) -> Option<f64> {
     if self.document.page_count == 0 {
       return Some(0.0);
     }
@@ -109,7 +109,7 @@ impl App {
   }
 }
 
-fn best_scroll_row_for_progress(
+pub(super) fn best_scroll_row_for_progress(
   layout: &ScrollLayout,
   viewport_height: u16,
   scroll_divisor: u16,
@@ -184,7 +184,7 @@ fn progress_for_scroll_row(
   (total_weight > 0.0).then_some(weighted_sum / total_weight)
 }
 
-fn best_grid_start_for_progress(
+pub(super) fn best_grid_start_for_progress(
   target: f64,
   capacity: usize,
   row_step: usize,

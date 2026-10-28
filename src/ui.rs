@@ -13,7 +13,7 @@ mod selection_view;
 use img_tui::ProtocolOverlay;
 use ratatui::{
   Frame,
-  layout::{Constraint, Direction, Rect},
+  layout::Rect,
   style::Style,
   widgets::{Block, Borders, Paragraph},
 };
@@ -83,13 +83,17 @@ pub fn draw(
 ) -> FrameOutput {
   let area = frame.area();
   let footer_height = footer::footer_height(app, area.width).min(area.height);
-  let chunks = ratatui::layout::Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
-    .split(area);
-  let main = chunks[0];
-  let footer = chunks[1];
-  let completion_overlay = footer::command_completion_overlay_area(app, main);
+  let main = area;
+  let footer = Rect::new(
+    area.x,
+    area.bottom().saturating_sub(footer_height),
+    area.width,
+    footer_height,
+  );
+  let completion_overlay = footer::command_completion_overlay_area(
+    app,
+    Rect::new(area.x, area.y, area.width, footer.y.saturating_sub(area.y)),
+  );
 
   let mut ctx = DrawCtx {
     pages: &mut pipeline.pages,
@@ -121,7 +125,7 @@ pub fn draw(
   // occluders that replace kitty U=1 placeholder cells. Uncovered cells keep
   // showing the page, and the regular text diff restores placeholders when
   // a modal closes.
-  let mut occluders = Vec::new();
+  let mut occluders = vec![footer];
   occluders.extend(completion_overlay);
   occluders.extend(modal::draw_confirm(frame, app, area));
   occluders.extend(modal::draw_key_help(frame, app, area));
@@ -149,6 +153,7 @@ pub fn draw(
   } else {
     Vec::new()
   };
+  app.overlay_areas.clone_from(&occluders);
   FrameOutput {
     overlays: images.overlays,
     protocol_writes: Vec::new(),
@@ -172,8 +177,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &mut App, ctx: &mut DrawCtx<'_>
     ViewMode::Bookmarks => bookmarks_view::draw_bookmarks(frame, app, ctx, area),
     ViewMode::Search => search_view::draw_search(frame, app, ctx, area),
     ViewMode::Selection => selection_view::draw_selection(frame, app, ctx, area),
-    ViewMode::Viewer if app.layout.is_scroll() => scroll::draw_scroll(frame, app, ctx, area),
-    ViewMode::Viewer => grid::draw_grid(frame, app, ctx, area),
+    ViewMode::Viewer => draw_viewer(frame, app, ctx, area),
   }
 }
 
@@ -197,4 +201,39 @@ fn draw_panel(frame: &mut Frame, app: &App, area: Rect, title: &str) -> Rect {
     area,
   );
   safe_inner(area, 1, 1)
+}
+
+fn draw_viewer(frame: &mut Frame, app: &mut App, ctx: &mut DrawCtx<'_>, area: Rect) {
+  let composition = app.layout.composition.clone();
+  let primary_area = composition
+    .as_ref()
+    .map_or(area, |c| c.split.areas(area)[c.split.primary.index()]);
+  if app.layout.is_scroll() {
+    scroll::draw_scroll(frame, app, ctx, primary_area);
+  } else {
+    grid::draw_grid(frame, app, ctx, primary_area);
+  }
+  let Some(composition) = composition else {
+    app.follower = None;
+    return;
+  };
+  let secondary = 1 - composition.split.primary.index();
+  app.prepare_follower(
+    composition.panels[secondary].clone(),
+    composition.split.areas(area)[secondary],
+  );
+  let panel = app.follower.as_ref().unwrap();
+  if let Some(layout) = &panel.scroll_layout {
+    scroll::draw_visible_slices(
+      frame,
+      app,
+      ctx,
+      panel.area,
+      layout,
+      panel.start,
+      panel.config.scroll_divisor,
+    );
+  } else {
+    grid::draw_grid_pages(frame, app, ctx, panel.area, &panel.config, panel.start);
+  }
 }

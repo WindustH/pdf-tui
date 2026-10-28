@@ -10,7 +10,9 @@ Pages are shown in `columns` columns and cut into horizontal slices of at most
 1/`scroll_divisor` of the screen height; one scroll step (`j`/`k`) moves one
 slice, and `h`/`l` move a screen. The page width is chosen to cover as much of
 the screen as possible across all scroll positions. Pages side by side are
-sliced on the same grid, so their slices line up.
+sliced on the same grid, so their slices line up. The viewport shows every row
+that fits its height: `scroll_divisor` limits slice height, not the number of
+visible slices or pages. Screen navigation uses the actual visible row count.
 
 Each slice is its own image, cached, preloaded, and drawn independently. This
 simulates continuous scrolling without the flicker and transitional frames of
@@ -120,15 +122,12 @@ reloaded.
 
 ## Slides
 
-`:layout slides 1 3` displays a scrollable column of thumbnails on the left
-and the current image/page at large size on the right. The two positive integer
-arguments are the left and right width weights; the default is `1 3` (25% / 75%).
-Use `j`/`k`, the mouse wheel, or click a thumbnail to change the current item.
-The thumbnail column follows the current item automatically. Thumbnail heights
-follow the image aspect ratio and terminal cell dimensions. Slides are borderless
-by default; `layout.presets.slides.show_border` can enable borders. If an older
-configuration saved this setting as `true`, change it to `false` for the new style.
+`:layout slides 1 3` composes two ordinary scroll panels. `slides-sidebar`
+uses one column with divisor 16 and page numbers; `slides-main` uses one column
+with divisor 1. The main panel controls reading progress, and the sidebar
+follows it. Clicking a thumbnail navigates the main panel. Both panels default
+to no borders with a one-column gap.
 
-Use `:layout-use slides 1 3` for a temporary change, or `:layout slides 1 3`
-to save it as the startup layout. Custom presets use `strategy = "slides"`,
-`params = ["left_ratio", "right_ratio"]`, `left_ratio = 1`, and `right_ratio = 3`.
+Change the leaf presets to adjust their appearance or scroll parameters.
+The same composition can combine grid and scroll, switch to top/bottom, or
+make either panel primary; see [Composite layouts](configuration.md#composite-layouts).

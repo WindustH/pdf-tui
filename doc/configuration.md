@@ -176,3 +176,53 @@ closed documents are kept.
 Shared rendering settings accept `zellij_sixel = true`, `false`, or `"auto"`.
 Legacy `"on"`/`"off"` values remain readable. `render.disk_cache_max_bytes`
 is the canonical disk budget; `cache_max_bytes` remains a read alias.
+
+
+## Composite layouts
+
+A composite references two ordinary presets. Their rendering, spacing, labels,
+and caches remain independent. The composition controls only the split and
+synchronization:
+
+```toml
+[layout.presets.review]
+strategy = "composite"
+params = ["first_ratio", "second_ratio"]
+
+[layout.presets.review.composition]
+direction = "horizontal"
+ratio = [1, 5]
+gap = 1
+primary = "second"
+
+[layout.presets.review.composition.first]
+layout = "slides-sidebar"
+args = []
+
+[layout.presets.review.composition.second]
+layout = "slides-main"
+args = []
+```
+
+Use `:layout-use review` to try it, or `:layout review` to save the selection.
+`:layout-use review 2 3` overrides the ratio. `horizontal` means left/right;
+`vertical` means top/bottom. `gap` is measured in terminal cells on the split
+axis and may be zero. The ratio applies after subtracting the gap.
+`primary = "first"` or `"second"` chooses the panel controlled by keys and the
+wheel. The other panel follows its reading position, centered as closely as
+its layout and document edges allow. Clicking a follower item navigates the
+primary. Each reference's `args` uses that preset's normal argument order.
+Nested compositions are rejected.
+
+The built-in `slides` is this mechanism's preset, using `slides-sidebar` and
+`slides-main`. Configure these **leaf presets** to change borders, labels, or
+image layout; configure `layout.presets.slides.composition` to change the
+split. Old `strategy = "slides"` presets remain accepted as compatibility
+aliases, but new presets should use `strategy = "composite"`.
+
+`show_page_numbers = true` works globally under `[layout]` or as a leaf-preset
+override. It reserves one line above each item and works without borders.
+The built-in sidebar is `scroll` with one column and `scroll_divisor = 16`;
+the main panel is `scroll` with one column and `scroll_divisor = 1`. Scroll
+numbering appears only before the first slice of a page. Following uses the
+same fractional page progress as saved reading positions.

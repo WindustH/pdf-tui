@@ -1,5 +1,5 @@
 use std::{
-  env, fs,
+  fs,
   path::{Path, PathBuf},
   process::Command,
   time::UNIX_EPOCH,
@@ -21,6 +21,7 @@ pub struct PdfDocument {
   pub modified_nanos: u128,
   pub page_cache_dir: PathBuf,
   pub page_temp_dir: PathBuf,
+  _temp_guard: std::sync::Arc<tempfile::TempDir>,
   pub raster_backend: PdfRasterBackend,
   pub pdf_raster_batch_pages: usize,
   pub pdftoppm_bin: String,
@@ -156,6 +157,11 @@ impl PdfDocument {
       .map(|name| name.to_string_lossy().into_owned())
       .unwrap_or_else(|| path.display().to_string());
 
+    let temp = std::sync::Arc::new(
+      tempfile::Builder::new()
+        .prefix("pdf-tui-pages-")
+        .tempdir()?,
+    );
     Ok(Self {
       path,
       file_name,
@@ -163,7 +169,8 @@ impl PdfDocument {
       size_bytes: metadata.len(),
       modified_nanos: modified_nanos(&metadata),
       page_cache_dir: cache_dir,
-      page_temp_dir: env::temp_dir().join("pdf-tui").join("pages"),
+      page_temp_dir: temp.path().to_owned(),
+      _temp_guard: temp,
       raster_backend: render.pdf_raster_backend,
       pdf_raster_batch_pages: render.pdf_raster_batch_pages.max(1),
       pdftoppm_bin: render.pdftoppm_bin.clone(),
@@ -393,4 +400,30 @@ pub(super) fn modified_nanos(metadata: &fs::Metadata) -> u128 {
     .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
     .map(|duration| duration.as_nanos())
     .unwrap_or_default()
+}
+
+impl PageImage {
+  /// One identity for all derived pixels and terminal resources. Equal pixel
+  /// bytes do not make different document slices interchangeable.
+  pub fn identity(&self) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"page-visual-v1");
+    hash.update(
+      img_tui::cache::paths::identity(&self.path)
+        .as_os_str()
+        .as_encoded_bytes(),
+    );
+    hash.update(self.page_index.to_le_bytes());
+    hash.update(self.size_bytes.to_le_bytes());
+    hash.update(self.modified_nanos.to_le_bytes());
+    hash.update(self.width.to_le_bytes());
+    hash.update(self.height.to_le_bytes());
+    if let Some(slice) = &self.slice {
+      hash.update([1]);
+      hash.update(slice.cache_key.as_bytes());
+    } else {
+      hash.update([0]);
+    }
+    hex::encode(hash.finalize())
+  }
 }

@@ -1,7 +1,6 @@
 use std::{
   collections::HashMap,
   fs as std_fs,
-  io::ErrorKind,
   path::{Path, PathBuf},
   time::{SystemTime, UNIX_EPOCH},
 };
@@ -25,25 +24,31 @@ pub(super) async fn read_cached_page_image(
   if !img_tui::cache::paths::contains(path) {
     return Ok(None);
   }
-  let materialized = img_tui::cache::paths::materialize(path)?;
-  let path = materialized.as_path();
-  let metadata = match fs::metadata(path).await {
-    Ok(metadata) => metadata,
-    Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-    Err(error) => return Err(error).with_context(|| format!("failed to stat {}", path.display())),
-  };
-  let (width, height) = match image_dimensions(path).await {
-    Ok(dimensions) => dimensions,
+  let materialized = match img_tui::cache::paths::materialize(path) {
+    Ok(file) => file,
     Err(error) => {
-      warn!(
-        path = %path.display(),
-        %error,
-        "ignoring invalid pdf page image cache"
-      );
-      let _ = fs::remove_file(path).await;
+      warn!(%error, "discarding unreadable page cache");
+      let _ = img_tui::cache::paths::remove(path);
       return Ok(None);
     }
   };
+  let metadata = match fs::metadata(&materialized).await {
+    Ok(metadata) => metadata,
+    Err(_) => {
+      let _ = img_tui::cache::paths::remove(path);
+      return Ok(None);
+    }
+  };
+  let (width, height) = match image_dimensions(&materialized).await {
+    Ok(dimensions) => dimensions,
+    Err(error) => {
+      warn!(%error, "discarding invalid page cache");
+      let _ = img_tui::cache::paths::remove(path);
+      let _ = fs::remove_file(&materialized).await;
+      return Ok(None);
+    }
+  };
+  let path = materialized.as_path();
 
   Ok(Some(PageImage {
     page_index,

@@ -35,6 +35,7 @@ pub(super) fn draw_metadata(frame: &mut Frame, app: &mut App, area: Rect) {
   let visible = rows
     .into_iter()
     .skip(usize::from(app.metadata_scroll))
+    .take(inner_height)
     .collect::<Vec<_>>();
   let theme = &app.settings.theme;
   frame.render_widget(

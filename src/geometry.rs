@@ -30,7 +30,14 @@ pub fn safe_inner(area: Rect, horizontal: u16, vertical: u16) -> Rect {
 /// taken away.
 pub fn slot_content_area(slot: Rect, layout: &EffectiveLayoutConfig) -> Rect {
   let inset = layout.padding.saturating_add(u16::from(layout.show_border));
-  safe_inner(slot, inset, inset)
+  let inner = safe_inner(slot, inset, inset);
+  let label = u16::from(layout.show_page_numbers).min(inner.height);
+  Rect::new(
+    inner.x,
+    inner.y.saturating_add(label),
+    inner.width,
+    inner.height.saturating_sub(label),
+  )
 }
 
 /// Splits `area` horizontally into the list and preview panels of the

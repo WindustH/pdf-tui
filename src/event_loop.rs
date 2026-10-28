@@ -70,7 +70,13 @@ impl Session {
         return Ok(());
       };
       needs_draw |= self.handle(message);
-      while let Ok(message) = self.rx.try_recv() {
+      for _ in 0..256 {
+        if self.app.should_quit() {
+          return Ok(());
+        }
+        let Ok(message) = self.rx.try_recv() else {
+          break;
+        };
         needs_draw |= self.handle(message);
       }
     }
@@ -100,6 +106,10 @@ impl Session {
   /// Applies one event; returns whether the screen needs a redraw.
   fn handle(&mut self, message: AsyncEvent) -> bool {
     match message {
+      AsyncEvent::Terminate => {
+        self.app.request_quit();
+        true
+      }
       AsyncEvent::Input { event, generation } => self.on_input(event, generation),
       AsyncEvent::Page(outcome) => self.on_page(outcome),
       AsyncEvent::Render(outcome) => self.on_render(outcome),
@@ -166,7 +176,22 @@ impl Session {
       return false;
     }
     debug!(?event, generation, "input event accepted");
+    let before = (
+      self.app.scroll,
+      self.app.grid_start_page,
+      self.app.layout.label(),
+    );
+    let resized = matches!(event, crossterm::event::Event::Resize(..));
     let redraw = self.app.handle_input(event, &self.tx);
+    let after = (
+      self.app.scroll,
+      self.app.grid_start_page,
+      self.app.layout.label(),
+    );
+    if resized || before != after {
+      self.pipeline.pages.cancel_preloads();
+      self.pipeline.renderer.cancel_preloads();
+    }
     self.reset_preloads_if_requested();
     debug!(
       redraw,
@@ -197,7 +222,11 @@ impl Session {
     }
     match outcome.slice {
       Some(slice) => self.app.finish_slice(slice, outcome.result),
-      None => self.app.finish_page(outcome.page_index, outcome.result),
+      None => self.app.finish_page(
+        outcome.page_index,
+        (outcome.target_width, outcome.target_height),
+        outcome.result,
+      ),
     }
     self.pump_preload();
     !preload || visible_wait
