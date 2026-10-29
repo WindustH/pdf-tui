@@ -74,6 +74,7 @@ impl SelectionState {
 
 impl App {
   pub(super) fn enter_selection_view(&mut self) {
+    self.selection.image_errors.clear();
     self.commit_selection_draft();
     self.key_dispatcher.clear();
     if self.current_selection().is_none() && !self.selection.history.is_empty() {

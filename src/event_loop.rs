@@ -119,6 +119,12 @@ impl Session {
       }
       AsyncEvent::Refresh(outcome) => {
         let queued = self.app.finish_refresh_request();
+        if outcome.revision != self.app.document_revision {
+          if queued {
+            self.app.request_refresh(&self.tx);
+          }
+          return false;
+        }
         match outcome.result {
           Ok(reload) => {
             self.apply_document_reload(reload);
@@ -177,13 +183,22 @@ impl Session {
     }
     debug!(?event, generation, "input event accepted");
     let before = (
+      self.app.view,
+      self.app.focused_page,
       self.app.scroll,
       self.app.grid_start_page,
       self.app.layout.label(),
     );
     let resized = matches!(event, crossterm::event::Event::Resize(..));
+    if resized {
+      let pixels = img_tui::capability::current_cell_pixels();
+      self.app.terminal_cell_pixels = pixels;
+      self.pipeline.renderer.set_cell_pixels(pixels);
+    }
     let redraw = self.app.handle_input(event, &self.tx);
     let after = (
+      self.app.view,
+      self.app.focused_page,
       self.app.scroll,
       self.app.grid_start_page,
       self.app.layout.label(),
@@ -263,6 +278,7 @@ impl Session {
     success: String,
     failure: &str,
   ) -> bool {
+    let queued = self.app.finish_document_write();
     match result {
       Ok(reload) => {
         self.apply_document_reload(reload);
@@ -273,6 +289,9 @@ impl Session {
         warn!(%error, "{failure}");
         self.app.set_message(format!("{failure}: {error}"));
       }
+    }
+    if queued {
+      self.app.request_refresh(&self.tx);
     }
     true
   }
@@ -307,6 +326,7 @@ impl Session {
   }
 
   fn on_cache_clear(&mut self, outcome: CacheClearOutcome) -> bool {
+    self.app.cache_clear_pending = false;
     match outcome.result {
       Ok(report) => {
         self.app.clear_cached_images();

@@ -8,6 +8,7 @@ struct CompressedRenderedImage {
   data: Vec<u8>,
   refresh: Option<Vec<u8>>,
   placement: Option<ProtocolPlacement>,
+  kitty_geometry: Option<native_image::KittyPlacementGeometry>,
   fingerprint: u64,
   erase: Option<Arc<str>>,
 }
@@ -85,6 +86,7 @@ impl CompressedRenderedImage {
         .transpose()
         .ok()?,
       placement: image.placement,
+      kitty_geometry: image.kitty_geometry,
       fingerprint: image.fingerprint,
       erase: image.erase.clone(),
     })
@@ -100,6 +102,7 @@ impl CompressedRenderedImage {
         .map(|refresh| decompress_memory_str(refresh))
         .transpose()?,
       placement: self.placement,
+      kitty_geometry: self.kitty_geometry,
       fingerprint: self.fingerprint,
       erase: self.erase.clone(),
     }))

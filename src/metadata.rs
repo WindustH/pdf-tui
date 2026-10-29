@@ -115,6 +115,9 @@ pub fn write_pdf_metadata_with_exiftool(
   if changes.is_empty() {
     return Ok(());
   }
+  let target = std::fs::canonicalize(path)
+    .map_err(|error| format!("failed to resolve {}: {error}", path.display()))?;
+  let path = target.as_path();
   let _lock = crate::cache::acquire_document_lock(path).map_err(|error| error.to_string())?;
   let mut command = Command::new("exiftool");
   command.arg("-overwrite_original");

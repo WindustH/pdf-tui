@@ -75,9 +75,17 @@ The selection view and `Y` render just the selected region: Poppler with
 `pdftoppm` crop options and Pdfium into a crop-sized bitmap. Mutool has no
 reliable crop option, so a temporary full page is rendered and cropped.
 Previews are rendered at the size the terminal area needs;
-`render.selection_image_max_pixels` limits only the copied PNG.
+`render.selection_image_max_pixels` limits the copied PNG. Selection raster
+scales are additionally capped at 16,777,216 full-page pixels and 8192 pixels
+per edge (64 MiB for one RGBA bitmap; backend working buffers are extra).
+Very small selections may therefore be copied at a lower resolution.
 
 Derived image keys include the page and slice identity even when two slices have identical pixels. Unreadable cached page, slice, search-highlight, and selection images are evicted and regenerated. Failed speculative page/render jobs wait five seconds before retrying; visible requests bypass that delay. Navigation and resize discard queued preloads for the old viewport.
 
-Command prompts, completion lists, status messages, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Permanent navigation (the music tab bar and Calibre search header) keeps its existing position.
-Kitty Unicode images are occluded through text cells without changing image geometry. Pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.
+Temporary command prompts, completion lists, and which-key hints use overlay surfaces: showing or dismissing them does not resize the main content viewport. Status messages update the reserved footer. Permanent chrome reserves space outside the viewport: the gallery/PDF status row and the music tab bar and three footer rows. Only transient surfaces cover content.
+Kitty Unicode images are occluded through text cells without changing image geometry. Regular Kitty placements are cropped around overlay rectangles without decoding the image again. Other pixel protocols may repaint intersecting images when an overlay changes, then paint the overlay text last. Overlay surfaces consume pointer events instead of activating covered content.
+
+On resize, cell pixel dimensions are refreshed from the terminal window size
+without sending an input-consuming terminal query. If pixel dimensions are
+unavailable, rendering uses its fallback cell size. Layout and render keys
+change with the refreshed dimensions.

@@ -300,6 +300,26 @@ impl LayoutConfig {
 
 impl LayoutPresetConfig {
   fn fill_missing_from(&mut self, default: &LayoutPresetConfig) {
+    if self.strategy.is_empty() {
+      self.strategy.clone_from(&default.strategy);
+    }
+    if self.strategy == default.strategy {
+      if self.composition.is_none() {
+        self.composition.clone_from(&default.composition);
+      }
+      if self.params.is_empty() {
+        self.params.clone_from(&default.params);
+      }
+      if self.columns == 0 {
+        self.columns = default.columns;
+      }
+      if self.rows == 0 {
+        self.rows = default.rows;
+      }
+    }
+    if self.show_page_numbers.is_none() {
+      self.show_page_numbers = default.show_page_numbers;
+    }
     if self.scroll_divisor == 0 {
       self.scroll_divisor = default.scroll_divisor;
     }
@@ -376,7 +396,7 @@ fn split_grid_shape(value: &str) -> Option<(String, String)> {
 
 fn normalize_layout_strategy(strategy: &str) -> String {
   match strategy.trim().to_ascii_lowercase().as_str() {
-    "scroll" | "continuous" => "scroll".to_string(),
+    "" | "scroll" | "continuous" => "scroll".to_string(),
     "grid" | "fixed_grid" | "fixed-grid" => "grid".to_string(),
     other => other.to_string(),
   }
@@ -497,7 +517,7 @@ fn default_padding() -> u16 {
 }
 
 fn default_layout_strategy() -> String {
-  "scroll".to_string()
+  String::new()
 }
 
 fn default_layout_presets() -> BTreeMap<String, LayoutPresetConfig> {

@@ -24,9 +24,15 @@ use super::{App, ConfirmDialog};
 
 impl App {
   pub(super) fn apply_confirm(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if self.document_write_pending {
+      self.set_message("document write already running; retry after it finishes");
+      return;
+    }
     let Some(confirm) = self.confirm.take() else {
       return;
     };
+    self.document_write_pending = true;
+    self.document_revision = self.document_revision.wrapping_add(1);
     match confirm {
       ConfirmDialog::MetadataWrite { edit } => {
         let path = self.document.path.clone();
@@ -77,6 +83,11 @@ impl App {
   }
 
   pub(super) fn request_clear_cache(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if self.cache_clear_pending {
+      self.set_message("clear-cache already running");
+      return;
+    }
+    self.cache_clear_pending = true;
     let cache_dir = self.settings.cache_dir.clone();
     let tx = tx.clone();
     self.set_message("clearing cache...");
@@ -89,7 +100,7 @@ impl App {
   }
 
   pub fn request_refresh(&mut self, tx: &mpsc::UnboundedSender<AsyncEvent>) {
-    if self.refresh_in_flight {
+    if self.refresh_in_flight || self.document_write_pending {
       self.refresh_queued = true;
       self.set_message("refresh already running; queued one more refresh");
       return;
@@ -99,10 +110,14 @@ impl App {
     let render = self.settings.config.render.clone();
     let tx = tx.clone();
     self.refresh_in_flight = true;
+    let revision = self.document_revision;
     self.set_message("refreshing document...");
     tokio::task::spawn_blocking(move || {
       let result = reload_document(path, cache_dir, render);
-      let _ = tx.send(AsyncEvent::Refresh(DocumentReloadOutcome { result }));
+      let _ = tx.send(AsyncEvent::Refresh(DocumentReloadOutcome {
+        revision,
+        result,
+      }));
     });
   }
 

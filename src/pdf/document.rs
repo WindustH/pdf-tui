@@ -197,10 +197,27 @@ impl PdfDocument {
     self.page_rotations.get(index).copied().unwrap_or(0)
   }
 
+  pub(crate) fn raster_config_key(&self) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+      self.raster_backend.label(),
+      self.pdftoppm_bin.as_str(),
+      self.mutool_bin.as_str(),
+      self.pdfium_library_path.as_deref().unwrap_or(""),
+    ] {
+      hasher.update(value.as_bytes());
+      hasher.update([0]);
+    }
+    hasher.update(self.mutool_band_height.to_le_bytes());
+    hasher.update(self.mutool_threads.to_le_bytes());
+    hasher.update([u8::from(self.mutool_parallel)]);
+    hex::encode(hasher.finalize())
+  }
+
   pub(super) fn cache_key(&self, target_width: u32, target_height: u32) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"pdf-tui-page-v7");
-    hasher.update(self.raster_backend.label().as_bytes());
+    hasher.update(self.raster_config_key().as_bytes());
     hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
     hasher.update(self.size_bytes.to_le_bytes());
@@ -214,7 +231,7 @@ impl PdfDocument {
   pub(super) fn slice_cache_key(&self, spec: PageSliceSpec) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"pdf-tui-page-slice-v6");
-    hasher.update(self.raster_backend.label().as_bytes());
+    hasher.update(self.raster_config_key().as_bytes());
     hasher.update([0]);
     hasher.update(self.path.to_string_lossy().as_bytes());
     hasher.update(self.size_bytes.to_le_bytes());

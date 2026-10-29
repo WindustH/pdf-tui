@@ -21,44 +21,49 @@ pub(super) async fn read_cached_page_image(
   page_index: usize,
   path: &Path,
 ) -> Result<Option<PageImage>> {
-  if !img_tui::cache::paths::contains(path) {
-    return Ok(None);
-  }
-  let materialized = match img_tui::cache::paths::materialize(path) {
-    Ok(file) => file,
-    Err(error) => {
-      warn!(%error, "discarding unreadable page cache");
-      let _ = img_tui::cache::paths::remove(path);
+  let path = path.to_path_buf();
+  tokio::task::spawn_blocking(move || {
+    let path = path.as_path();
+    if !img_tui::cache::paths::contains(path) {
       return Ok(None);
     }
-  };
-  let metadata = match fs::metadata(&materialized).await {
-    Ok(metadata) => metadata,
-    Err(_) => {
-      let _ = img_tui::cache::paths::remove(path);
-      return Ok(None);
-    }
-  };
-  let (width, height) = match image_dimensions(&materialized).await {
-    Ok(dimensions) => dimensions,
-    Err(error) => {
-      warn!(%error, "discarding invalid page cache");
-      let _ = img_tui::cache::paths::remove(path);
-      let _ = fs::remove_file(&materialized).await;
-      return Ok(None);
-    }
-  };
-  let path = materialized.as_path();
+    let materialized = match img_tui::cache::paths::materialize(path) {
+      Ok(file) => file,
+      Err(error) => {
+        warn!(%error, "discarding unreadable page cache");
+        let _ = img_tui::cache::paths::remove(path);
+        return Ok(None);
+      }
+    };
+    let metadata = match std_fs::metadata(&materialized) {
+      Ok(metadata) => metadata,
+      Err(_) => {
+        let _ = img_tui::cache::paths::remove(path);
+        return Ok(None);
+      }
+    };
+    let (width, height) = match image::image_dimensions(&materialized) {
+      Ok(dimensions) => dimensions,
+      Err(error) => {
+        warn!(%error, "discarding invalid page cache");
+        let _ = img_tui::cache::paths::remove(path);
+        let _ = std_fs::remove_file(&materialized);
+        return Ok(None);
+      }
+    };
+    let path = materialized.as_path();
 
-  Ok(Some(PageImage {
-    page_index,
-    path: path.to_path_buf(),
-    width,
-    height,
-    size_bytes: metadata.len(),
-    modified_nanos: modified_nanos(&metadata),
-    slice: None,
-  }))
+    Ok(Some(PageImage {
+      page_index,
+      path: path.to_path_buf(),
+      width,
+      height,
+      size_bytes: metadata.len(),
+      modified_nanos: modified_nanos(&metadata),
+      slice: None,
+    }))
+  })
+  .await?
 }
 
 /// Serializes rendering of one cache entry group across tasks and

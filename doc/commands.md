@@ -79,5 +79,6 @@ on the command line, to `config.toml`.
 
 Deletes cached page and slice PNGs, terminal renders, search indexes, search
 highlight and selection PNGs, and their LRU markers. Logs and remembered
-reading positions are kept. The command is refused while another `pdf-tui`
-instance uses the same cache.
+reading positions are kept. SQLite transactions allow other instances to keep
+using the cache; entries may be repopulated by active rendering tasks. Repeated
+clear requests in this instance are ignored until the current clear finishes.

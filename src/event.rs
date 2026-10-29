@@ -32,6 +32,7 @@ pub struct DocumentReload {
 
 #[derive(Debug)]
 pub struct DocumentReloadOutcome {
+  pub revision: u64,
   pub result: Result<DocumentReload, String>,
 }
 

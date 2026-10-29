@@ -83,7 +83,11 @@ pub fn draw(
 ) -> FrameOutput {
   let area = frame.area();
   let footer_height = footer::footer_height(app, area.width).min(area.height);
-  let main = area;
+  // Keep the persistent status row outside the document viewport.
+  let main = Rect {
+    height: area.height.saturating_sub(1),
+    ..area
+  };
   let footer = Rect::new(
     area.x,
     area.bottom().saturating_sub(footer_height),

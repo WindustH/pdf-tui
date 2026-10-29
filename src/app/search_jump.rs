@@ -39,7 +39,13 @@ impl App {
     let center = f64::from(viewport.height) / 2.0;
     let mut best_row = None;
     let mut best_distance = f64::INFINITY;
-    for start_row in 0..=cached.max_scroll() {
+    // Every row occupies at least one terminal line. Only starts within a
+    // viewport's height of the target can put that row on screen.
+    let first = target
+      .row_index
+      .saturating_sub(usize::from(viewport.height));
+    let last = target.row_index.min(cached.max_scroll());
+    for start_row in first..=last {
       let Some(placed) = scroll_layout
         .placed_items(start_row, screen, divisor)
         .into_iter()

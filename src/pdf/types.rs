@@ -83,3 +83,21 @@ impl PdfSelection {
     )
   }
 }
+
+/// Bound selection intermediates to 16 megapixels (64 MiB of RGBA) and
+/// 8192 pixels per edge, even when a tiny crop requests a very large scale.
+/// Backends may allocate additional working buffers beyond this bitmap.
+pub(crate) fn bounded_selection_page_size(width: f64, height: f64) -> (u32, u32) {
+  if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+    return (1, 1);
+  }
+  let scale = (16_777_216.0 / (width * height))
+    .sqrt()
+    .min(8192.0 / width)
+    .min(8192.0 / height)
+    .min(1.0);
+  (
+    (width * scale).floor().max(1.0) as u32,
+    (height * scale).floor().max(1.0) as u32,
+  )
+}

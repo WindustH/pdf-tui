@@ -1,9 +1,9 @@
 //! Cross-process locking: per-entry cache locks and the instance registry
 //! used to tell whether other pdf-tui processes share the cache.
 //!
-//! A lock is a `.lock` file created with `create_new` and held with an OS
-//! file lock (`flock` on Unix, `LockFileEx` on Windows). The kernel drops
-//! the OS lock when a process dies, so leftover lock files can be reclaimed.
+//! Entry locks retain a stable `.lock` inode and use an OS file lock
+//! (`flock` on Unix, `LockFileEx` on Windows). The kernel releases ownership
+//! when a process dies. Instance registry files use unique names and may be removed.
 
 use std::{
   fs::{self as std_fs, File, OpenOptions},
@@ -25,25 +25,25 @@ pub struct CacheInstanceGuard {
 
 impl Drop for CacheInstanceGuard {
   fn drop(&mut self) {
-    unlock_file(&self._file);
+    // Acquirers use create_new, so keep the OS lock held until this name is
+    // removed. Never unlink after another owner could reclaim the path.
     let _ = std_fs::remove_file(&self.path);
+    unlock_file(&self._file);
   }
 }
 
 pub struct CacheFileLock {
-  path: PathBuf,
   _file: File,
 }
 
 impl Drop for CacheFileLock {
   fn drop(&mut self) {
+    // Keep the pathname stable: a waiter may already have opened this inode.
     unlock_file(&self._file);
-    let _ = std_fs::remove_file(&self.path);
   }
 }
 
 const LOCK_RECLAIM_GRACE: Duration = Duration::from_secs(2);
-const CACHE_FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(600);
 const INSTANCE_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(40);
 
@@ -110,33 +110,19 @@ pub fn acquire_cache_file_lock_sync(cache_path: &Path) -> Result<CacheFileLock> 
   }
 }
 
-/// One attempt at taking the lock: `None` while another live holder has
-/// it; a stale leftover is reclaimed and retried immediately.
+/// One attempt at taking a persistent entry lock; `None` while held.
 fn try_create_cache_lock(lock_path: &Path) -> Result<Option<CacheFileLock>> {
-  loop {
-    match OpenOptions::new()
-      .read(true)
-      .write(true)
-      .create_new(true)
-      .open(lock_path)
-    {
-      Ok(file) => {
-        let file = initialize_lock_file(file, lock_path)?;
-        return Ok(Some(CacheFileLock {
-          path: lock_path.to_path_buf(),
-          _file: file,
-        }));
-      }
-      Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-        if !reclaim_lock_file(lock_path, CACHE_FILE_LOCK_STALE_AFTER) {
-          return Ok(None);
-        }
-      }
-      Err(error) => {
-        return Err(error)
-          .with_context(|| format!("failed to create cache lock {}", lock_path.display()));
-      }
-    }
+  let file = OpenOptions::new()
+    .read(true)
+    .write(true)
+    .create(true)
+    .truncate(false)
+    .open(lock_path)
+    .with_context(|| format!("failed to open cache lock {}", lock_path.display()))?;
+  if try_lock_file(&file)? {
+    Ok(Some(CacheFileLock { _file: file }))
+  } else {
+    Ok(None)
   }
 }
 
@@ -222,12 +208,9 @@ fn reclaim_lock_file(path: &Path, stale_after: Duration) -> bool {
     .and_then(|body| lock_pid(&body))
     .is_some_and(process_alive);
   let stale = !pid_alive || age.is_none_or(|age| age > stale_after);
+  let removed = stale && std_fs::remove_file(path).is_ok();
   unlock_file(&file);
-  drop(file);
-  if stale {
-    let _ = std_fs::remove_file(path);
-  }
-  stale
+  removed
 }
 
 fn remove_stale_instance_locks(runtime_dir: &Path) {

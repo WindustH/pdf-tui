@@ -312,6 +312,10 @@ impl App {
   }
 
   fn handle_action(&mut self, action: &str, tx: &mpsc::UnboundedSender<AsyncEvent>) {
+    if !self.action_available(action) {
+      self.set_message(format!("action unavailable in this view: {action}"));
+      return;
+    }
     if let Some(command) = action.strip_prefix("layout-use ") {
       self.execute_layout_command(command, false);
       return;
@@ -443,7 +447,10 @@ impl App {
     let before = self.frame_navigation_state();
     let clear_search_highlight = self.view == ViewMode::Viewer;
     navigate(self);
-    if clear_search_highlight && self.view == ViewMode::Viewer {
+    if clear_search_highlight
+      && self.view == ViewMode::Viewer
+      && before != self.frame_navigation_state()
+    {
       self.search.viewer_highlight = None;
     }
     if self.frame_sync_navigation_enabled() && before != self.frame_navigation_state() {

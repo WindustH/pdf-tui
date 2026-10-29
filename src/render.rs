@@ -246,6 +246,13 @@ impl RenderStore {
     self.modes.first().is_some_and(|mode| mode.is_protocol())
   }
 
+  pub fn set_cell_pixels(&mut self, pixels: Option<(u16, u16)>) {
+    if self.native_config.cell_pixels != pixels {
+      self.native_config.cell_pixels = pixels;
+      self.clear_state();
+    }
+  }
+
   pub fn clear_state(&mut self) {
     self.memory.clear();
     self.failures.clear();

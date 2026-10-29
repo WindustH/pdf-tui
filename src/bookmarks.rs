@@ -85,6 +85,9 @@ pub fn write_pdf_bookmarks_with_pdftk(
   cache_dir: &Path,
   bookmarks: &[PdfBookmark],
 ) -> Result<(), String> {
+  let target = std::fs::canonicalize(path)
+    .map_err(|error| format!("failed to resolve {}: {error}", path.display()))?;
+  let path = target.as_path();
   let _lock = crate::cache::acquire_document_lock(path).map_err(|error| error.to_string())?;
   let original_data = dump_pdf_data(path, pdftk_bin)?;
   let update_info = replace_bookmarks_in_pdftk_data(&original_data, bookmarks);
@@ -256,7 +259,10 @@ fn replace_bookmarks_in_pdftk_data(data: &str, bookmarks: &[PdfBookmark]) -> Str
     if line == "BookmarkBegin" {
       insert_at.get_or_insert(output.len());
       index += 1;
-      while index < lines.len() && !lines[index].ends_with("Begin") {
+      while index < lines.len()
+        && lines[index].starts_with("Bookmark")
+        && lines[index] != "BookmarkBegin"
+      {
         index += 1;
       }
       continue;

@@ -66,7 +66,10 @@ Background jobs and new requests may populate fresh entries after a clear.
 Each application uses its own `cache.sqlite3`. Instances of pdf-tui can share
 one local database through WAL, short transactions and a busy timeout.
 Per-entry OS locks still serialize expensive PDF rendering. Cache clearing
-and trimming no longer depend on the number of running instances.
+and trimming no longer depend on the number of running instances. Entry `.lock`
+files remain in place after use so waiting processes keep locking the same file;
+the operating system releases ownership when the holder exits. Do not manually
+delete lock files while an instance is running.
 
 ## Logs
 

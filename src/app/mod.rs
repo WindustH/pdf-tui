@@ -107,6 +107,9 @@ pub struct App {
   frame_navigation_locked: bool,
   pending_progress: Option<f64>,
   refresh_in_flight: bool,
+  pub(crate) document_revision: u64,
+  pub(crate) document_write_pending: bool,
+  pub(crate) cache_clear_pending: bool,
   refresh_queued: bool,
   quit: bool,
   editor_request: Option<EditorRequest>,
@@ -171,6 +174,9 @@ impl App {
       frame_navigation_locked: false,
       pending_progress: None,
       refresh_in_flight: false,
+      document_revision: 0,
+      document_write_pending: false,
+      cache_clear_pending: false,
       refresh_queued: false,
       quit: false,
       editor_request: None,
@@ -344,6 +350,11 @@ impl App {
       edit.new_count()
     ));
     self.confirm = Some(ConfirmDialog::BookmarksWrite { edit });
+  }
+
+  pub(crate) fn finish_document_write(&mut self) -> bool {
+    self.document_write_pending = false;
+    std::mem::take(&mut self.refresh_queued)
   }
 
   pub fn finish_refresh_request(&mut self) -> bool {

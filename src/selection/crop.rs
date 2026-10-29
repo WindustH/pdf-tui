@@ -95,14 +95,14 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
       label,
     )
   ));
-  if cache::valid_cached_image(&path) {
-    return page_image_from_path(selection.page_index, path, None);
+  if let Some(image) = read_selection_cache(selection.page_index, path.clone()).await? {
+    return Ok(image);
   }
   let _lock = cache::acquire_cache_file_lock(&path)
     .await
     .map_err(|error| format!("failed to lock selection cache {}: {error}", path.display()))?;
-  if cache::valid_cached_image(&path) {
-    return page_image_from_path(selection.page_index, path, None);
+  if let Some(image) = read_selection_cache(selection.page_index, path.clone()).await? {
+    return Ok(image);
   }
   if let Ok(crop) = crate::pdf::render_uncached_selection_image_at(
     &document,
@@ -122,8 +122,14 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
         )
       })?;
 
-    let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, disk_cache_max_bytes);
-    return page_image_from_path(selection.page_index, path, None);
+    return finish_selection_cache(
+      selection.page_index,
+      path,
+      cache_dir,
+      dir,
+      disk_cache_max_bytes,
+    )
+    .await;
   }
   let (fallback_page_width, fallback_page_height) =
     selection_fallback_page_target(selection, target_width, target_height);
@@ -142,8 +148,14 @@ async fn render_selection_image(request: SelectionImageRenderRequest) -> Result<
   .await
   .map_err(|error| format!("selection image worker failed: {error}"))??;
 
-  let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, disk_cache_max_bytes);
-  page_image_from_path(selection.page_index, path, None)
+  finish_selection_cache(
+    selection.page_index,
+    path,
+    cache_dir,
+    dir,
+    disk_cache_max_bytes,
+  )
+  .await
 }
 
 pub fn selection_image_cache_key(
@@ -283,13 +295,10 @@ fn selection_fallback_page_target(
 ) -> (u32, u32) {
   let x_scale = f64::from(crop_width.max(1)) / selection.rect.width().max(1.0);
   let y_scale = f64::from(crop_height.max(1)) / selection.rect.height().max(1.0);
-  let width = (selection.page_width.max(1.0) * x_scale.max(0.01))
-    .ceil()
-    .clamp(1.0, f64::from(u32::MAX)) as u32;
-  let height = (selection.page_height.max(1.0) * y_scale.max(0.01))
-    .ceil()
-    .clamp(1.0, f64::from(u32::MAX)) as u32;
-  (width.max(1), height.max(1))
+  crate::pdf::types::bounded_selection_page_size(
+    selection.page_width.max(1.0) * x_scale,
+    selection.page_height.max(1.0) * y_scale,
+  )
 }
 
 fn document_selection_cache_key(
@@ -301,10 +310,10 @@ fn document_selection_cache_key(
   label: &str,
 ) -> String {
   let mut hasher = Sha256::new();
-  hasher.update(b"pdf-tui-selection-render-v4");
+  hasher.update(b"pdf-tui-selection-render-v5");
   hasher.update(label.as_bytes());
   hasher.update([0]);
-  hasher.update(document.raster_backend.label().as_bytes());
+  hasher.update(document.raster_config_key().as_bytes());
   hasher.update([0]);
   hasher.update(document.path.to_string_lossy().as_bytes());
   hasher.update(document.size_bytes.to_le_bytes());
@@ -318,4 +327,30 @@ fn document_selection_cache_key(
   hasher.update(target_height.to_le_bytes());
   hasher.update(max_pixels.unwrap_or_default().to_le_bytes());
   hex::encode(hasher.finalize())
+}
+
+async fn read_selection_cache(page: usize, path: PathBuf) -> Result<Option<PageImage>, String> {
+  tokio::task::spawn_blocking(move || {
+    if !cache::valid_cached_image(&path) {
+      return Ok(None);
+    }
+    page_image_from_path(page, path, None).map(Some)
+  })
+  .await
+  .map_err(|e| e.to_string())?
+}
+
+async fn finish_selection_cache(
+  page: usize,
+  path: PathBuf,
+  cache_dir: PathBuf,
+  dir: PathBuf,
+  limit: u64,
+) -> Result<PageImage, String> {
+  tokio::task::spawn_blocking(move || {
+    let _ = cache::enforce_cache_target_limit_sync(&cache_dir, &dir, limit);
+    page_image_from_path(page, path, None)
+  })
+  .await
+  .map_err(|e| e.to_string())?
 }

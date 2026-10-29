@@ -133,7 +133,10 @@ impl App {
         cursor,
         prefix,
         filter_completion_candidates(COMMAND_NAMES.iter().copied(), prefix),
-        true,
+        matches!(
+          prefix.trim_start_matches(':'),
+          "layout" | "layout-use" | "layout_use"
+        ),
         0,
       ));
     }
@@ -150,7 +153,7 @@ impl App {
           cursor,
           prefix,
           filter_completion_candidates(self.settings.config.layout.presets.keys(), prefix),
-          true,
+          !self.settings.config.layout.presets.contains_key(prefix),
           0,
         ))
       }
