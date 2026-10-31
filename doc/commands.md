@@ -40,7 +40,7 @@ The default presets are:
 - `scroll <columns> <scroll_divisor>`: continuous scrolling; each page is cut
   into slices of at most 1/`scroll_divisor` of the screen height, and one
   scroll step moves one slice.
-- `slides <left_ratio> <right_ratio>`: thumbnails on the left and a large preview
+- `slides <first_ratio> <second_ratio>`: thumbnails on the left and a large preview
   on the right, with positive integer width weights (default `1 3`).
 - `grid <rows> <columns>`: a fixed grid of whole pages. `2x3` is accepted in
   place of `2 3`.

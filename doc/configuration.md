@@ -180,49 +180,52 @@ is the canonical disk budget; `cache_max_bytes` remains a read alias.
 
 ## Composite layouts
 
-A composite references two ordinary presets. Their rendering, spacing, labels,
-and caches remain independent. The composition controls only the split and
-synchronization:
+A composite owns two inline child panels. They are not named presets and do not
+appear in layout completion. Each panel specifies its ordinary layout strategy
+and optional styling directly; unset styling inherits the global layout settings.
 
 ```toml
-[layout.presets.review]
+[layout.presets.slides]
 strategy = "composite"
 params = ["first_ratio", "second_ratio"]
 
-[layout.presets.review.composition]
+[layout.presets.slides.composition]
 direction = "horizontal"
-ratio = [1, 5]
+ratio = [1, 3]
 gap = 1
 primary = "second"
 
-[layout.presets.review.composition.first]
-layout = "slides-sidebar"
-args = []
+[layout.presets.slides.composition.first]
+strategy = "scroll"
+columns = 1
+scroll_divisor = 16
+show_page_numbers = true
+show_border = false
+padding = 0
 
-[layout.presets.review.composition.second]
-layout = "slides-main"
-args = []
+[layout.presets.slides.composition.second]
+strategy = "scroll"
+columns = 1
+scroll_divisor = 1
+show_page_numbers = false
+show_border = false
+padding = 0
 ```
 
-Use `:layout-use review` to try it, or `:layout review` to save the selection.
-`:layout-use review 2 3` overrides the ratio. `horizontal` means left/right;
-`vertical` means top/bottom. `gap` is measured in terminal cells on the split
-axis and may be zero. The ratio applies after subtracting the gap.
-`primary = "first"` or `"second"` chooses the panel controlled by keys and the
-wheel. The other panel follows its reading position, centered as closely as
-its layout and document edges allow. Clicking a follower item navigates the
-primary. Each reference's `args` uses that preset's normal argument order.
-Nested compositions are rejected.
+Use `:layout slides` to activate this preset, or `:layout slides 1 5` to override
+the panel ratio. `horizontal` means left/right; `vertical` means top/bottom.
+The gap is measured in terminal cells and excluded before splitting the space.
+`primary` selects the panel controlled by keyboard and wheel; the other follows
+its reading position. Clicking the follower navigates the primary panel.
+Nested compositions and runtime preset references are not supported.
 
-The built-in `slides` is this mechanism's preset, using `slides-sidebar` and
-`slides-main`. Configure these **leaf presets** to change borders, labels, or
-image layout; configure `layout.presets.slides.composition` to change the
-split. Old `strategy = "slides"` presets remain accepted as compatibility
-aliases, but new presets should use `strategy = "composite"`.
+`config::migration` upgrades legacy `strategy = "slides"`, ratio parameters,
+and `composition.first/second` preset references before loading the current
+schema. References and their arguments are expanded into child settings,
+preserving custom panel styles. Obsolete built-in helper presets are removed
+unless explicitly selected as the startup layout. Other user presets remain.
+The original configuration is backed up as `config.toml.bak.*` before validated
+changes are saved atomically. Repeated loads do not migrate the file again.
 
-`show_page_numbers = true` works globally under `[layout]` or as a leaf-preset
-override. It reserves one line above each item and works without borders.
-The built-in sidebar is `scroll` with one column and `scroll_divisor = 16`;
-the main panel is `scroll` with one column and `scroll_divisor = 1`. Scroll
-numbering appears only before the first slice of a page. Following uses the
-same fractional page progress as saved reading positions.
+Scroll page numbers appear before the first slice of a page. Following uses
+the same fractional page progress as saved reading positions.

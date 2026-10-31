@@ -1,6 +1,7 @@
 mod behavior;
 mod keymap;
 mod layout;
+mod migration;
 mod render;
 mod theme;
 
@@ -61,6 +62,7 @@ pub async fn load_or_create() -> Result<Settings> {
     .with_context(|| format!("failed to create {}", cache_dir.display()))?;
 
   let config_path = config_dir.join("config.toml");
+  migration::run(&config_path).await?;
   let config = read_or_write_default(&config_path, AppConfig::default()).await?;
   let keymap =
     read_or_write_keymap_default(&config_dir.join("keymap.toml"), KeymapConfig::default()).await?;
@@ -131,7 +133,7 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
       Some("Show a one-based item number above each page/image; independent of borders.")
     }
     "layout.presets.*.composition" => {
-      Some("Combine two ordinary layout presets; each keeps its own geometry and cache sizes.")
+      Some("Define two inline child panels; each keeps its own layout, styling and cache sizes.")
     }
     "layout.presets.*.composition.direction" => {
       Some("horizontal: left/right; vertical: top/bottom.")
@@ -145,11 +147,8 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     "layout.presets.*.composition.primary" => {
       Some("first or second: keyboard/wheel control this panel; the other follows its progress.")
     }
-    "layout.presets.*.composition.first.layout" | "layout.presets.*.composition.second.layout" => {
-      Some("Name of an ordinary layout preset; nested compositions are not supported.")
-    }
-    "layout.presets.*.composition.first.args" | "layout.presets.*.composition.second.args" => {
-      Some("Arguments for the referenced preset, in that preset's params order.")
+    "layout.presets.*.composition.first" | "layout.presets.*.composition.second" => {
+      Some("Inline child panel settings; not a separately selectable layout preset.")
     }
 
     "layout" => Some("Layout defaults and the startup preset selection."),
@@ -167,12 +166,6 @@ fn pdf_config_comment(key: &str) -> Option<&'static str> {
     ),
     "layout.presets.*.params" => Some("Runtime arguments accepted by :layout for this preset."),
     "layout.presets.*.columns" => Some("Default number of page columns."),
-    "layout.presets.*.left_ratio" => {
-      Some("Left thumbnail panel width weight for slides (positive integer).")
-    }
-    "layout.presets.*.right_ratio" => {
-      Some("Right preview panel width weight for slides (positive integer).")
-    }
     "layout.presets.*.rows" => Some("Default number of page rows for grid layouts."),
     "layout.presets.*.scroll_divisor" => {
       Some("Scroll step divisor for continuous scrolling layouts.")
